@@ -12,9 +12,9 @@ using std::vector;
 */
 class PlaneData {
     public:
-        vector<vec3> h_points;
-        vector<vec3> h_normals;
-        vector<vec4> h_rotations;
+        vector<glm::vec4> h_points;
+        vector<glm::vec4> h_normals;
+        vector<glm::vec4> h_rotations;
 
         size_t num_planes;
         float plane_width;

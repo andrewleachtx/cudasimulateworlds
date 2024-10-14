@@ -50,14 +50,14 @@ TODO:
 */
 
 static const size_t g_numParticles = NUM_PARTICLES;
-static size_t g_numSimulations, g_numParticles;
+static size_t g_numWorlds, g_numParticles;
 float g_curTime(0.0f);
 long long g_curStep(0);
 
 // Device Hyperparameters - Constant Space //
 __constant__ const size_t d_numParticles = NUM_PARTICLES; 
 __constant__ size_t d_numWorlds, d_numPlanes;
-__constant__ glm::vec4 d_planeP[6], d_planeN[6]; // TODO: FIX SHAPE.CPP IMPLICATIONS OF USING VEC4
+__constant__ glm::vec4 d_planeP[6], d_planeN[6];
 
 bool g_is_simFrozen(false);
 cudaEvent_t kernel_simStart, kernel_simStop;
@@ -88,12 +88,9 @@ static void init() {
         g_planes.copyToDevice();
 
     // Particles //
-        g_particles = ParticleData(g_numParticles);
+        g_particles = ParticleData(g_numParticles, g_numWorlds);
         g_particles.init(0.5f);
         g_particles.copyToDevice();
-
-    size_t problem_sz = g_particles.h_numParticles;
-    g_blocksPerGrid = dim3((problem_sz + g_threadsPerBlock.x - 1) / g_threadsPerBlock.x);
 }
 
 /*
@@ -120,6 +117,7 @@ __device__ void solveConstraints(int idx, const glm::vec4* pos, const glm::vec4*
                                  int simulationIdx, int particleIdx, glm::vec3* s_dv) {
     // Truncate the w component
     const glm::vec3& x(pos[idx]), v(vel[idx]);
+    const float r_i = radii[idx];
 
     // Particle-Particle Collisions //
     /*
@@ -135,7 +133,7 @@ __device__ void solveConstraints(int idx, const glm::vec4* pos, const glm::vec4*
         int idx_j = simulationIdx * d_numParticles + j;
 
         glm::vec3 x_j(pos[idx_j]), v_j(vel[idx_j]);
-        float r_j = radii[j];
+        float r_j = radii[idx_j];
 
         /*
             If the distance from our particle to the other is less than radii[i] + radii[j] we have collided.
@@ -151,7 +149,7 @@ __device__ void solveConstraints(int idx, const glm::vec4* pos, const glm::vec4*
         glm::vec3 x_ij = x - x_j;
         float d_ij = glm::length(x_ij);
 
-        if (d_ij < radii[idx] + r_j) {
+        if (d_ij < r_i + r_j) {
             glm::vec3 n_ij = glm::normalize(x_ij);
             glm::vec3 v_ij = v - v_j;
 
@@ -175,7 +173,7 @@ __device__ void solveConstraints(int idx, const glm::vec4* pos, const glm::vec4*
     for (int i = 0; i < d_numPlanes; i++) {
         const glm::vec3& p(d_planeP[i]), n(d_planeN[i]);
 
-        glm::vec3 new_p = p + (radii[idx] * n);
+        glm::vec3 new_p = p + (r_i * n);
 
         float d_0 = glm::dot(x - new_p, n);
         float d_n = glm::dot(x_new - new_p, n);
@@ -208,7 +206,7 @@ __global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int
     // Overflow shouldn't be possible
     int idx = simulationIdx * d_numParticles + particleIdx;
 
-    if (idx > (d_numWorlds * d_numParticles)) {
+    if (idx >= (d_numWorlds * d_numParticles)) {
         return;
     }
 
@@ -290,9 +288,6 @@ void launchSimulations() {
     gpuErrchk(cudaEventRecord(kernel_simStop, 0));
     gpuErrchk(cudaEventSynchronize(kernel_simStop));
     
-    // TODO: Potentially add an event to avoid the constant memcpy.
-    gpuErrchk(cudaMemcpyFromSymbol(&g_deadParticles, d_deadParticles, sizeof(unsigned int), 0, cudaMemcpyDeviceToHost));
- 
     float elapsed;
     gpuErrchk(cudaEventElapsedTime(&elapsed, kernel_simStart, kernel_simStop));
 
@@ -303,13 +298,15 @@ void launchSimulations() {
 }
 
 int main(int argc, char**argv) {
-    if (argc < 3) {
-        cout << "Usage: ./executable <number of particles> <threads per block>" << endl;
+    if (argc < 2) {
+        cout << "Usage: ./executable <number of worlds/blocks>" << endl;
         return 0;
-    }
+    } 
 
-    int threadsPerBlock = stoi(argv[2]);
-    g_threadsPerBlock = dim3(threadsPerBlock);
+    g_numWorlds = (size_t)stoul(argv[1]);
+    
+    g_threadsPerBlock = dim3(g_numParticles);
+    g_blocksPerGrid = dim3(g_numWorlds);
 
     // Initialize planes, particles, cuda buffers
     init();
