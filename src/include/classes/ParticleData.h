@@ -18,18 +18,19 @@ using std::vector;
 */
 class ParticleData {
     public:
-        vector<vec3> h_position;
-        vector<vec3> h_velocity;
+        vector<glm::vec4> h_position;
+        vector<glm::vec4> h_velocity;
         vector<float> h_radii;
 
-        vec3* d_position;
-        vec3* d_velocity;
+        glm::vec4* d_position;
+        glm::vec4* d_velocity;
         float* d_radii;
 
-        size_t h_maxParticles;
+        size_t h_numParticles;
+        size_t h_numWorlds;
            
         __host__ __device__ ParticleData();
-        __host__ __device__ ParticleData(size_t max_particles);
+        __host__ __device__ ParticleData(size_t numParticles, size_t numWorlds);
         __host__ __device__ ~ParticleData();
 
         void __host__ __device__ copyToDevice();

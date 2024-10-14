@@ -92,7 +92,7 @@ static void init() {
         g_particles.init(0.5f);
         g_particles.copyToDevice();
 
-    size_t problem_sz = g_particles.h_maxParticles;
+    size_t problem_sz = g_particles.h_numParticles;
     g_blocksPerGrid = dim3((problem_sz + g_threadsPerBlock.x - 1) / g_threadsPerBlock.x);
 }
 
@@ -176,55 +176,28 @@ __device__ void solveConstraints(int idx, const glm::vec4* pos, const glm::vec4*
         const glm::vec3& p(d_planeP[i]), n(d_planeN[i]);
 
         glm::vec3 new_p = p + (radii[idx] * n);
+
+        float d_0 = glm::dot(x - new_p, n);
+        float d_n = glm::dot(x_new - new_p, n);
+
+        glm::vec3 v_tan = v - (glm::dot(v, n) * n);
+        v_tan = (1 - FRICTION) * v_tan;
+
+        glm::vec3 v_tan = v - (glm::dot(v, n) * n);
+        v_tan = (1 - FRICTION) * v_tan;
+
+        if (d_n < FLOAT_EPS) {
+            float f = d_0 / (d_0 - d_n);
+            dt = f * dt;
+
+            glm::vec3 v_collision = (v + (dt * a)) * RESTITUTION;    
+            glm::vec3 x_collision = x;
+
+            x_new = x_collision;
+            v_new = (abs(glm::dot(v_collision, n)) * n) + (v_tan);
+        }
     }
-
 }
-
-// __device__ void solveConstraints(int idx, const glm::vec3* pos, const glm::vec3* vel, const float* radii, 
-//                                  glm::vec3& x_new, glm::vec3& v_new, float& dt, const glm::vec3& a) {
-//     // Avoid at rest particles otherwise our counter will be inaccurate
-//     if (glm::length(v_new) < STOP_VELOCITY) {
-//         return;
-//     }
-
-//     // Truncate the w component
-//     const glm::vec3& x(pos[idx]), v(vel[idx]);
-
-//     // Plane Collisions //
-//     for (int i = 0; i < d_numPlanes; i++) {
-//         const glm::vec3& p(d_planeP[i]), n(d_planeN[i]);
-
-//         glm::vec3 new_p = p + (radii[idx] * n);
-
-//         float d_0 = glm::dot(x - new_p, n);
-//         float d_n = glm::dot(x_new - new_p, n);
-
-//         glm::vec3 v_tan = v - (glm::dot(v, n) * n);
-//         v_tan = (1 - FRICTION) * v_tan;
-
-//         if (d_n < FLOAT_EPS) {
-//             float f = d_0 / (d_0 - d_n);
-//             dt = f * dt;
-
-//             glm::vec3 v_collision = (v + (dt * a)) * RESTITUTION;    
-//             glm::vec3 x_collision = x;
-
-//             x_new = x_collision;
-//             v_new = (abs(glm::dot(v_collision, n)) * n) + (v_tan);
-
-//             // Because behavior is pretty standard, naive jitter handling is okay here. Two more checks are possible.
-//             if (abs(glm::dot(v_new, n)) < STOP_VELOCITY) {
-//                 v_new = v_tan;
-//             }
-//         }
-//     }
-
-//     // If |v_idx| < STOP_VELOCITY we can assume a particle has "converged", and we should reduce the counter.
-//     // this works because each particle has a significant nonzero initial velocity.
-//     if (glm::length(v_new) < STOP_VELOCITY) {
-//         atomicAdd(&d_deadParticles, 1);
-//     }
-// }
 
 /*
     We are now working with global arrays of great size; 
@@ -239,7 +212,7 @@ __global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int
         return;
     }
 
-    // Allocate shared memory for impulse and convergence - because n varies at runtime
+    // Allocate shared memory for graceful impulse & convergence handling; each block is one world so this works 
     __shared__ glm::vec3 s_dv[d_numParticles];
     __shared__ int s_converged;
 
@@ -254,61 +227,53 @@ __global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int
     short max_iter = 10;
     
     glm::vec3 x_cur(pos[idx]), v_cur(vel[idx]);
+    glm::vec3 x_new(x_cur), v_new(v_cur);
     
     while (max_iter && dt_remaining > FLOAT_EPS) {
         // Within the timestep multiple collisions are possible, so we will have to reuse the shared memory 
         s_dv[particleIdx] = glm::vec3(0.0f);
         
         glm::vec3 a = getAcceleration(idx, vel);
-        glm::vec3 x_new, v_new;
+
+        // Integrate over timestep to update
+        x_new = x_cur + (dt * v_cur);
+        v_new = v_cur + (dt * a);
 
         // We have to synchronize before and after entering
         __syncthreads();
-        
-        // TODO: Implement solveConstraints - it should apply necessary changes to velocity and whatnot.
-        // solveConstraints(...)
 
+        // Resolve particle-particle AND particle-plane position constraints
+        solveConstraints(idx, pos, vel, radii, x_new, v_new, dt, a, simulationIdx, particleIdx, s_dv);
         __syncthreads();
 
+        x_cur = x_new;
+        v_cur = v_new;
+
+        dt_remaining -= dt;
+        max_iter--;
     }
 
-}
+    // We can do our convergence check here
+    int is_stopped = 0;
+    if (length(v_new) < STOP_VELOCITY) {
+        v_new = glm::vec3(0.0f);
+        is_stopped = 1;
+    }
 
-// __global__ void simulateKernel(vec3* pos, vec3* vel, float* radii) {
-//     /* To retrieve the index in this 1D instance, we do this: */
-//     int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    // The and of all 64 particles being stopped in this world being 1 represents full convergence
+    atomicAnd(&s_converged, is_stopped);
+
+    __syncthreads();
+
+    // No need for atomic here, only the first thread will update the flag
+    if (particleIdx == 0) {
+        convergeFlags[simulationIdx] = s_converged;
+    }
     
-//     // Because we are effectively doing a ceiling function for threads, some amount will not have a particle associated
-//     // Additionally, note this is MINUS ONE because we don't want the last one moving.
-//     if (idx >= (d_numParticles - 1)) {
-//         return;
-//     }
-
-//     // Use of __constant__ space on the kernel https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#device-memory
-//     float dt_remaining = DT_SIMULATION;
-//     float dt = dt_remaining;
-
-//     int max_iter = 10;
-//     const vec3& x_cur(pos[idx]), v_cur(vel[idx]);
-
-//     while (max_iter && dt_remaining > 0.0f) {
-//         // TODO: Consider passing in pos, vel through value to functions like this to avoid uncoalesced global accesses
-//         vec3 a = getAcceleration(idx, vel);
-
-//         vec3 x_new, v_new;
-
-//         // Integrate over timestep to update
-//         solveConstraints(idx, pos, vel, radii, x_new, v_new, dt, a);
-
-//         // Update particle state
-//         pos[idx] = x_new;
-//         vel[idx] = v_new;
-
-//         // Update remaining time
-//         dt_remaining -= dt;
-//         max_iter--;
-//     }
-// }
+    // Before we potentially overwrote in the same simulateKernel call, we can reduce global access this way
+    pos[idx] = glm::vec4(x_new, 0.0f);
+    vel[idx] = glm::vec4(v_new, 0.0f);
+}
 
 long long ctr=10e9;
 
@@ -343,12 +308,8 @@ int main(int argc, char**argv) {
         return 0;
     }
 
-    g_numParticles = stoi(argv[1]);
     int threadsPerBlock = stoi(argv[2]);
     g_threadsPerBlock = dim3(threadsPerBlock);
-
-    g_deadParticles = 0;
-    gpuErrchk(cudaMemcpyToSymbol(d_deadParticles, &g_deadParticles, sizeof(unsigned int)));
 
     // Initialize planes, particles, cuda buffers
     init();
@@ -357,7 +318,7 @@ int main(int argc, char**argv) {
     auto start = std::chrono::high_resolution_clock::now();
     auto end = start + std::chrono::seconds(MAX_SIMULATE_TIME_SECONDS);
     
-    while ((std::chrono::high_resolution_clock::now() < end) && (g_deadParticles < g_numParticles)) {
+    while ((std::chrono::high_resolution_clock::now() < end)) {
         launchSimulations();
     }
 
