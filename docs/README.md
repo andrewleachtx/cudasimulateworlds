@@ -34,6 +34,11 @@ to `~/.profile` and `source ~/.bashrc`. To know it works, run `nvcc --version`.
       2. For the $kth$ simulation we can access particle$_{ki}$ by designating 1 block to 1 simulation, and 1 thread to one particle. With $k$ blocks and $n$ threads, we have `blocksPerGrid` = $k$ and `threadsPerBlock` = $n$.
          1. It would look like this: `simulateKernel<<<blocksPerGrid=k, threadsPerBlock=n>>>`
          2. `simulationIdx = blockIdx.x`, `particleIdx = threadIdx.x` $\implies \text{particle}_{ki}$ `idx = simulationIdx * particleIdx`.
+6. Every instance of `simulateKernel` is one world; one simulation step for that entire world. If we have $k$ worlds and 1 block = 1 world, the bound is $min(k, \text{max GPU blocks})$. Eventually, we are going to actually exceed the number of available blocks on the GPU, as there are `deviceProp.maxGridSize[0]` blocks available to us.
+   1. This can be resolved by moving towards a batch approach of launching the kernels in our length $k$ loop, which introduces a degree of series execution as our loop runs $\lceil\frac{numWorlds}{\text{maxBlocks}}\rceil$ times.
+   2. The batch size as our loop iterates, or number of worlds for the ith batch, would be: $$\min(\text{maxBlocks}, \text{numWorlds} - (i * \text{maxBlocks}))$$
+   
+   3. Our number of batches would then be: $$\left\lfloor\frac{\text{numWorlds} + \text{maxBlocks} - 1}{maxBlocks}\right\rfloor$$
 
 ## Optimizations & New Features
 1. Moved to explicitly using `glm::vec4` with padding over `glm::vec3`. This is to use 16 bytes per call.

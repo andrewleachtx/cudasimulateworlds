@@ -50,7 +50,7 @@ TODO:
 */
 
 static const size_t g_numParticles = NUM_PARTICLES;
-static size_t g_numWorlds, g_numParticles;
+static size_t g_numWorlds, g_numParticles, g_maxBlocks;
 float g_curTime(0.0f);
 long long g_curStep(0);
 
@@ -280,21 +280,29 @@ void launchSimulations() {
         TODO: The new goal of this function is to iterate over as many 50^2 worlds
         as possible, and branch off a kernel for each of them - this loop should
         be very fast as it 
+    
+        1. Every instance of "simulateKernel" is a world - that is to say it is one step of simulation
+        for that world.
+        2. If we have k worlds and 1 block = 1 world, the bound becomes min(k, total blocks on the grid). Of
+           course if we have plenty of blocks on the grid, we are fine - but eventually we are going to
+           exceed this. So we can launch worlds in "batches".
+        3. The batch size would then be min(maxBlocks, k - (i * maxBlocks))
+        
     */
 
-    // https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#elapsed-time
-    gpuErrchk(cudaEventRecord(kernel_simStart, 0));
-    simulateKernel<<<g_blocksPerGrid, g_threadsPerBlock>>>(g_particles.d_position, g_particles.d_velocity, g_particles.d_radii);
-    gpuErrchk(cudaEventRecord(kernel_simStop, 0));
+    int k = g_numWorlds;
+    int batch_ct = (k + g_maxBlocks - 1) / g_maxBlocks;
+    int batch_sz = // TODO: WRITE BATCH_SZ, AND FINISH LOOP)
+
+    gpuErrchk(cudaEventRecord(kernel_simStart));
+
+    /*
+        TODO: Iterate over batch_ct with batch_sz = 
+    */
+
+
+    gpuErrchk(cudaEventRecord(kernel_simStop));
     gpuErrchk(cudaEventSynchronize(kernel_simStop));
-    
-    float elapsed;
-    gpuErrchk(cudaEventElapsedTime(&elapsed, kernel_simStart, kernel_simStop));
-
-    g_totalKernelTimes += elapsed;
-    g_timeSampleCt++;
-
-    gpuErrchk(cudaGetLastError());
 }
 
 int main(int argc, char**argv) {
@@ -303,10 +311,24 @@ int main(int argc, char**argv) {
         return 0;
     } 
 
+    // Get GPU info https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#l2-cache-set-aside-for-persisting-accesses
+    cudaDeviceProp deviceProp;
+    int device;
+
+    cudaGetDevice(&device);
+    cudaGetDeviceProperties(&deviceProp, device);
+
+    printf("Max grid sizes per dimension are x = %d, y = %d, z = %d\n", deviceProp.maxGridSize[0], deviceProp.maxGridSize[1], deviceProp.maxGridSize[2]);
+    printf("Max threads per block: %d, max shared memory (bytes): %d, L2 cache size (bytes): %d, global memory size: %d\n", deviceProp.maxThreadsPerBlock, deviceProp.sharedMemPerBlock, deviceProp.l2CacheSize, deviceProp.totalGlobalMem);
+    g_maxBlocks = deviceProp.maxGridSize[0];
+
     g_numWorlds = (size_t)stoul(argv[1]);
+    printf("Batching in %d worlds / %d max blocks\n", g_numWorlds, g_maxBlocks);
     
     g_threadsPerBlock = dim3(g_numParticles);
-    g_blocksPerGrid = dim3(g_numWorlds);
+
+    printf("Setting g_blocksPerGrid = dim3(min(%d, %d))\n", g_numWorlds, g_maxBlocks);
+    g_blocksPerGrid = dim3(min(g_numWorlds, g_maxBlocks));
 
     // Initialize planes, particles, cuda buffers
     init();
@@ -318,7 +340,7 @@ int main(int argc, char**argv) {
     while ((std::chrono::high_resolution_clock::now() < end)) {
         launchSimulations();
     }
-
+    
     // Convergence time
     auto conv_time = std::chrono::high_resolution_clock::now() - start;
     auto conv_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(conv_time).count();
