@@ -11,7 +11,7 @@
 #define FRICTION 0.1f
 #define RESTITUTION 0.85f
 #define BENCHMARK true
-#define STOP_VELOCITY 4.5f
+#define STOP_VELOCITY 2.0f
 #define MAX_SIMULATE_TIME_SECONDS 500
 
 

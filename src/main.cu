@@ -50,12 +50,14 @@ TODO:
 */
 
 static const size_t g_numParticles = NUM_PARTICLES;
-static size_t g_numWorlds, g_numParticles, g_maxBlocks;
+static size_t g_numWorlds, g_maxBlocks;
+static int* h_convergenceFlags;
+static bool g_isGlobalConverged(false);
 float g_curTime(0.0f);
 long long g_curStep(0);
 
 // Device Hyperparameters - Constant Space //
-__constant__ const size_t d_numParticles = NUM_PARTICLES; 
+__constant__ size_t d_numParticles;
 __constant__ size_t d_numWorlds, d_numPlanes;
 __constant__ glm::vec4 d_planeP[6], d_planeN[6];
 
@@ -75,6 +77,7 @@ PlaneData g_planes;
 
 static void init() {
     srand(0);
+    size_t k = g_numWorlds;
 
     // CUDA //
         gpuErrchk(cudaSetDevice(0));
@@ -88,9 +91,17 @@ static void init() {
         g_planes.copyToDevice();
 
     // Particles //
-        g_particles = ParticleData(g_numParticles, g_numWorlds);
+        g_particles = ParticleData(g_numParticles, k);
         g_particles.init(0.5f);
         g_particles.copyToDevice();
+
+        // numWorlds
+        gpuErrchk(cudaMemcpyToSymbol(d_numWorlds, &g_numWorlds, sizeof(size_t)));
+
+        // We should zero h_convergenceFlags here and send that to CUDA
+        h_convergenceFlags = new int[k];
+        memset(h_convergenceFlags, 0, k * sizeof(int));
+        cudaMemcpy(g_particles.d_convergenceFlags, h_convergenceFlags, k * sizeof(int), cudaMemcpyHostToDevice);
 }
 
 /*
@@ -102,7 +113,7 @@ __device__ glm::vec3 getAcceleration(int idx, const glm::vec4* v) {
     float mass = 1.0f;
 
     // Simple force composed of gravity and air resistance
-    glm::vec3 F_total = glm::vec3(GRAVITY) - ((AIR_FRICTION / mass) * glm::vec3(v[idx])); 
+    glm::vec3 F_total = glm::vec3(0.0f, GRAVITY, 0.0f) - ((AIR_FRICTION / mass) * glm::vec3(v[idx])); 
 
     return F_total;
 }
@@ -112,11 +123,11 @@ __device__ glm::vec3 getAcceleration(int idx, const glm::vec4* v) {
     going to establish a simple distance constraint that is resolve with impulse / momentum.
 */
 
-__device__ void solveConstraints(int idx, const glm::vec4* pos, const glm::vec4* vel, const float* radii,
+static __device__ void solveConstraints(int idx, const glm::vec4* pos, const glm::vec4* vel, const float* radii,
                                  glm::vec3& x_new, glm::vec3& v_new, float& dt, const glm::vec3& a,
                                  int simulationIdx, int particleIdx, glm::vec3* s_dv) {
     // Truncate the w component
-    const glm::vec3& x(pos[idx]), v(vel[idx]);
+    const glm::vec3 x(pos[idx]), v(vel[idx]);
     const float r_i = radii[idx];
 
     // Particle-Particle Collisions //
@@ -171,15 +182,12 @@ __device__ void solveConstraints(int idx, const glm::vec4* pos, const glm::vec4*
     
     // Plane Collisions //
     for (int i = 0; i < d_numPlanes; i++) {
-        const glm::vec3& p(d_planeP[i]), n(d_planeN[i]);
+        const glm::vec3 p(d_planeP[i]), n(d_planeN[i]);
 
         glm::vec3 new_p = p + (r_i * n);
 
         float d_0 = glm::dot(x - new_p, n);
         float d_n = glm::dot(x_new - new_p, n);
-
-        glm::vec3 v_tan = v - (glm::dot(v, n) * n);
-        v_tan = (1 - FRICTION) * v_tan;
 
         glm::vec3 v_tan = v - (glm::dot(v, n) * n);
         v_tan = (1 - FRICTION) * v_tan;
@@ -206,12 +214,14 @@ __global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int
     // Overflow shouldn't be possible
     int idx = simulationIdx * d_numParticles + particleIdx;
 
+    // FIXME: When a thread returns early, it cannot join __syncthreads later, so we should note this
     if (idx >= (d_numWorlds * d_numParticles)) {
+        printf("Returning idx = %d\n", idx);        
         return;
     }
 
     // Allocate shared memory for graceful impulse & convergence handling; each block is one world so this works 
-    __shared__ glm::vec3 s_dv[d_numParticles];
+    __shared__ glm::vec3 s_dv[NUM_PARTICLES];
     __shared__ int s_converged;
 
     // We only want to initialize it once
@@ -226,7 +236,8 @@ __global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int
     
     glm::vec3 x_cur(pos[idx]), v_cur(vel[idx]);
     glm::vec3 x_new(x_cur), v_new(v_cur);
-    
+
+    // printf("1\n");
     while (max_iter && dt_remaining > FLOAT_EPS) {
         // Within the timestep multiple collisions are possible, so we will have to reuse the shared memory 
         s_dv[particleIdx] = glm::vec3(0.0f);
@@ -242,6 +253,7 @@ __global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int
 
         // Resolve particle-particle AND particle-plane position constraints
         solveConstraints(idx, pos, vel, radii, x_new, v_new, dt, a, simulationIdx, particleIdx, s_dv);
+
         __syncthreads();
 
         x_cur = x_new;
@@ -250,6 +262,7 @@ __global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int
         dt_remaining -= dt;
         max_iter--;
     }
+    // printf("2\n");
 
     // We can do our convergence check here
     int is_stopped = 0;
@@ -261,7 +274,9 @@ __global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int
     // The and of all 64 particles being stopped in this world being 1 represents full convergence
     atomicAnd(&s_converged, is_stopped);
 
-    __syncthreads();
+    // printf("3\n");
+    // __syncthreads();
+    // printf("4\n");
 
     // No need for atomic here, only the first thread will update the flag
     if (particleIdx == 0) {
@@ -273,43 +288,84 @@ __global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int
     vel[idx] = glm::vec4(v_new, 0.0f);
 }
 
-long long ctr=10e9;
+long long ctr = 10e9;
 
 void launchSimulations() {
-    /*
-        TODO: The new goal of this function is to iterate over as many 50^2 worlds
-        as possible, and branch off a kernel for each of them - this loop should
-        be very fast as it 
-    
-        1. Every instance of "simulateKernel" is a world - that is to say it is one step of simulation
-        for that world.
-        2. If we have k worlds and 1 block = 1 world, the bound becomes min(k, total blocks on the grid). Of
-           course if we have plenty of blocks on the grid, we are fine - but eventually we are going to
-           exceed this. So we can launch worlds in "batches".
-        3. The batch size would then be min(maxBlocks, k - (i * maxBlocks))
-        
-    */
-
-    int k = g_numWorlds;
-    int batch_ct = (k + g_maxBlocks - 1) / g_maxBlocks;
-    int batch_sz = // TODO: WRITE BATCH_SZ, AND FINISH LOOP)
+    int maxBlocks(g_maxBlocks), numWorlds(g_numWorlds);
+    int batch_ct = (numWorlds + maxBlocks - 1) / maxBlocks;
 
     gpuErrchk(cudaEventRecord(kernel_simStart));
 
-    /*
-        TODO: Iterate over batch_ct with batch_sz = 
-    */
+    for (int i = 0; i < batch_ct; i++) {
+        int batch_offset = i * maxBlocks;
+        int batch_sz = std::min(maxBlocks, numWorlds - batch_offset);
 
+        // We should offset our pointers correspond to the correct batch
+        glm::vec4* pos = g_particles.d_position + (batch_offset * g_numParticles);
+        glm::vec4* vel = g_particles.d_velocity + (batch_offset * g_numParticles);
+        float* radii = g_particles.d_radii + (batch_offset * g_numParticles);
+        int* c_flags = g_particles.d_convergenceFlags + (batch_offset);
+
+        // Launch kernel, static size shared memory should be 64 * sizeof(glm::vec3) ~ 700 bytes per block should be ok
+        // https://developer.nvidia.com/blog/using-shared-memory-cuda-cc/#static_shared_memory
+        simulateKernel<<<batch_sz, g_threadsPerBlock>>>(pos, vel, radii, c_flags);
+
+        // FIXME: Do we need to sync here? 
+        gpuErrchk(cudaDeviceSynchronize());
+        gpuErrchk(cudaGetLastError());
+    }
+
+    // Test copy buffer
+    if (ctr % 500 == 0 && ctr > 0) {
+        glm::vec4* pos_buffer = new glm::vec4[g_numParticles];
+        cudaMemcpy(pos_buffer, g_particles.d_position, g_numParticles * sizeof(glm::vec4), cudaMemcpyDeviceToHost);
+        for (int i = 0; i < 3; i++) {
+            printf("Particle %d Y: %f\n", i, pos_buffer[i].y);
+        }
+        printf("------------\n");
+
+        ctr--;
+    }
+    else {
+        ctr--;
+    }
 
     gpuErrchk(cudaEventRecord(kernel_simStop));
     gpuErrchk(cudaEventSynchronize(kernel_simStop));
+
+    // Global Convergence //
+    bool is_globalConverged = true;
+    cudaMemcpy(h_convergenceFlags, g_particles.d_convergenceFlags, numWorlds * sizeof(int), cudaMemcpyDeviceToHost);
+    for (int i = 0; i < numWorlds; i++) {
+        is_globalConverged = is_globalConverged && h_convergenceFlags[i];
+    }
+
+    // Could just set it equal, but this way we avoid global access :)
+    // I guess this begs the question: is time(local read + evaluate) < (global read + write) ?
+    if (is_globalConverged) {
+        g_isGlobalConverged = true;
+    }
+
+    // Benchmarking //
+    if (BENCHMARK) {
+        float kernel_time;
+        cudaEventElapsedTime(&kernel_time, kernel_simStart, kernel_simStop);
+        g_totalKernelTimes += kernel_time;
+        g_timeSampleCt++;
+    }
 }
 
 int main(int argc, char**argv) {
     if (argc < 2) {
         cout << "Usage: ./executable <number of worlds/blocks>" << endl;
         return 0;
-    } 
+    }
+
+    g_numWorlds = std::stoi(argv[1]);
+    if (g_numWorlds <= 0) {
+        cerr << "Number of worlds must be > 0" << endl;
+        return 1;
+    }
 
     // Get GPU info https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#l2-cache-set-aside-for-persisting-accesses
     cudaDeviceProp deviceProp;
@@ -319,16 +375,16 @@ int main(int argc, char**argv) {
     cudaGetDeviceProperties(&deviceProp, device);
 
     printf("Max grid sizes per dimension are x = %d, y = %d, z = %d\n", deviceProp.maxGridSize[0], deviceProp.maxGridSize[1], deviceProp.maxGridSize[2]);
-    printf("Max threads per block: %d, max shared memory (bytes): %d, L2 cache size (bytes): %d, global memory size: %d\n", deviceProp.maxThreadsPerBlock, deviceProp.sharedMemPerBlock, deviceProp.l2CacheSize, deviceProp.totalGlobalMem);
-    g_maxBlocks = deviceProp.maxGridSize[0];
+    printf("Max threads per block: %zu, max shared memory (bytes): %zu, L2 cache size (bytes): %zu, global memory size: %zu\n", deviceProp.maxThreadsPerBlock, deviceProp.sharedMemPerBlock, deviceProp.l2CacheSize, deviceProp.totalGlobalMem);
+    // FIXME: For now we literally get overflow if we do this because worlds * maxBlocks is used to calculate the bound
+    g_maxBlocks = min((size_t)deviceProp.maxGridSize[0], (size_t)(1 << 16) - 1);
 
-    g_numWorlds = (size_t)stoul(argv[1]);
-    printf("Batching in %d worlds / %d max blocks\n", g_numWorlds, g_maxBlocks);
+    printf("Batching in %zu worlds / %zu max blocks\n", g_numWorlds, g_maxBlocks);
     
     g_threadsPerBlock = dim3(g_numParticles);
 
-    printf("Setting g_blocksPerGrid = dim3(min(%d, %d))\n", g_numWorlds, g_maxBlocks);
-    g_blocksPerGrid = dim3(min(g_numWorlds, g_maxBlocks));
+    printf("Setting g_blocksPerGrid = dim3(min(%zu, %zu))\n", g_numWorlds, g_maxBlocks);
+    g_blocksPerGrid = dim3(std::min(g_numWorlds, g_maxBlocks));
 
     // Initialize planes, particles, cuda buffers
     init();
@@ -337,7 +393,7 @@ int main(int argc, char**argv) {
     auto start = std::chrono::high_resolution_clock::now();
     auto end = start + std::chrono::seconds(MAX_SIMULATE_TIME_SECONDS);
     
-    while ((std::chrono::high_resolution_clock::now() < end)) {
+    while (!g_isGlobalConverged && (std::chrono::high_resolution_clock::now() < end)) {
         launchSimulations();
     }
     
@@ -358,9 +414,10 @@ int main(int argc, char**argv) {
         printf("Kernel time / total program time: %f\n", usage);
     }
 
-    // CUDA Cleanup //
+    // Cleanup //
     cudaEventDestroy(kernel_simStart);
     cudaEventDestroy(kernel_simStop);
+    delete[] h_convergenceFlags;
 
     return 0;
 }

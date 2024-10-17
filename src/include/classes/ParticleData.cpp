@@ -7,6 +7,8 @@
 #include "../../include.h"
 using std::vector, std::cerr, std::cout, std::endl;
 
+extern __constant__ size_t d_numParticles;
+
 __host__ __device__ ParticleData::ParticleData() : h_numParticles(0), h_numWorlds(0) {
     d_position = nullptr;
     d_velocity = nullptr;
@@ -32,6 +34,7 @@ __host__ __device__ ParticleData::ParticleData(size_t numParticles, size_t numWo
     gpuErrchk(cudaMalloc(&d_position, k * n * sizeof(glm::vec4)));
     gpuErrchk(cudaMalloc(&d_velocity, k * n * sizeof(glm::vec4)));
     gpuErrchk(cudaMalloc(&d_radii, k * n * sizeof(float)));
+    gpuErrchk(cudaMalloc(&d_convergenceFlags, k * sizeof(int)));
 }
 
 // FIXME: Causes issues if I (attempt to) properly handle memory deallocation.
@@ -54,6 +57,8 @@ __host__ __device__ ParticleData::~ParticleData() {
 __host__ __device__ void ParticleData::copyToDevice() {
     size_t k(h_numWorlds), n(h_numParticles);
     size_t instances = k * n;
+
+    gpuErrchk(cudaMemcpyToSymbol(&d_numParticles, &n, sizeof(size_t)));
 
     gpuErrchk(cudaMemcpy(d_position, h_position.data(), instances * sizeof(glm::vec4), cudaMemcpyHostToDevice));
     gpuErrchk(cudaMemcpy(d_velocity, h_velocity.data(), instances * sizeof(glm::vec4), cudaMemcpyHostToDevice));
@@ -88,7 +93,7 @@ void ParticleData::init(const float& radius) {
         // cout << x.x << " " << x.y << " " << x.z << endl;
     }
 
-    float push = 90.0f;
+    float push = 10.0f;
     for (glm::vec4& v : h_velocity) {
         float rand_x = dist_vel(gen);
         float rand_y = dist_vel(gen);

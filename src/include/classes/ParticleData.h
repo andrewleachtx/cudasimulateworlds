@@ -25,6 +25,7 @@ class ParticleData {
         glm::vec4* d_position;
         glm::vec4* d_velocity;
         float* d_radii;
+        int* d_convergenceFlags;
 
         size_t h_numParticles;
         size_t h_numWorlds;

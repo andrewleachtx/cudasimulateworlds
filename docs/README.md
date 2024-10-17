@@ -36,9 +36,12 @@ to `~/.profile` and `source ~/.bashrc`. To know it works, run `nvcc --version`.
          2. `simulationIdx = blockIdx.x`, `particleIdx = threadIdx.x` $\implies \text{particle}_{ki}$ `idx = simulationIdx * particleIdx`.
 6. Every instance of `simulateKernel` is one world; one simulation step for that entire world. If we have $k$ worlds and 1 block = 1 world, the bound is $min(k, \text{max GPU blocks})$. Eventually, we are going to actually exceed the number of available blocks on the GPU, as there are `deviceProp.maxGridSize[0]` blocks available to us.
    1. This can be resolved by moving towards a batch approach of launching the kernels in our length $k$ loop, which introduces a degree of series execution as our loop runs $\lceil\frac{numWorlds}{\text{maxBlocks}}\rceil$ times.
-   2. The batch size as our loop iterates, or number of worlds for the ith batch, would be: $$\min(\text{maxBlocks}, \text{numWorlds} - (i * \text{maxBlocks}))$$
-   
-   3. Our number of batches would then be: $$\left\lfloor\frac{\text{numWorlds} + \text{maxBlocks} - 1}{maxBlocks}\right\rfloor$$
+   2. The batch size is the minimum of the remaining worlds to process and the maximum block size: $$\min(\text{maxBlocks}, \text{numWorlds} - (i * \text{maxBlocks}))$$
+   3. Our number of batches, rewritten to use integer division's implicit floor: $$\left\lceil\frac{numWorlds}{maxBlocks}\right\rceil = \left\lfloor\frac{\text{numWorlds} + \text{maxBlocks} - 1}{maxBlocks}\right\rfloor$$
+   4. Note we should recall to offset our $\vec{x}[]$, $\vec{v}[]$, and $r[]$ arrays to account for the correct batch. Also, we should store a convergence flag per world, that way we can reason when there is local vs global convergence.
+
+## Logging
+1. Of course when removing rendering, there is no longer a visual corresponding to the state. To view the simulation state over convergence period for a given world, you can input the viewing argument, an integer in [0, numWorlds) to view, as well as an output file, otherwise it will default to no output.
 
 ## Optimizations & New Features
 1. Moved to explicitly using `glm::vec4` with padding over `glm::vec3`. This is to use 16 bytes per call.

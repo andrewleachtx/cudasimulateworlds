@@ -23,8 +23,8 @@ float randFloat() {
     return static_cast<float>(rand()) / RAND_MAX;
 };
 
-vec3 randXYZ() {
-    return vec3(randFloat(), randFloat(), randFloat());
+glm::vec3 randXYZ() {
+    return glm::vec3(randFloat(), randFloat(), randFloat());
 }
 
 const float FLOAT_EPS = 1e-8f;
