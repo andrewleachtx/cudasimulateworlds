@@ -14,12 +14,17 @@ to `~/.profile` and `source ~/.bashrc`. To know it works, run `nvcc --version`.
 
 ## Helpful Commands
 - `cat /etc/os-release` shows the distro and device architecture.
-- `nvidia-smi` provides GPU information (assuming it is a NVIDIA gpu).
+- `nvidia-smi` provides basic GPU information (assuming it is a NVIDIA gpu).
 - `ncu --target-processes all -o <report name> <executable> [executable args]` will generate a compute report over all kernels given some executable and its args.
+- `"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\extras\demo_suite\deviceQuery.exe"` (or wherever it is located) will provide even more specific device information.
+
+## GPU Specifications
+1. TODO: Insert a chart differentiating the 4090, 2080 SUPER, and A2000 using deviceQuery.exe 
 
 ## Notes
-1. Benchmarks were run on a **NVIDIA GeForce RTX 4090** with **CUDA 12.2**. For better access to the hardware and profiling, a lesser GPU was used locally to debug and run against `ncu` to evaluate performance.
-   1. The hope of using ncu to isolate inefficiencies is that they will scale to the benchmarks on the full-fledged 4090 GPU or standard. 
+1. Benchmarks were run on a **NVIDIA GeForce RTX 4090** with **CUDA 12.2**. For better access to the hardware and profiling, a RTX 2080 SUPER was used locally to debug and run against `ncu` to evaluate performance.
+   1. The hope of using ncu to isolate inefficiencies is that they will scale to the benchmarks on the full-fledged 4090 GPU or standard.
+   2. 
 2. Each simulation "converges" when their last particle velocity reaches $\approx 0$. For the $ith$ world or simulation, this occurs when the "dead particle" counter reaches the size $n_i$ of that simulation.
 3. Thread size and particle size vary and are tested as hyperparameters. Block size is according to the following:
    ```cpp
