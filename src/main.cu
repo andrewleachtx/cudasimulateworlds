@@ -6,6 +6,9 @@
 #include <device_launch_parameters.h>
 
 #include <chrono>
+#include <iomanip>
+#include <fstream>
+#include <sstream>
 
 using std::cout, std::cerr, std::endl;
 using std::vector, std::string, std::make_shared, std::shared_ptr;
@@ -27,7 +30,7 @@ using std::stoi, std::stoul, std::min, std::max, std::numeric_limits, std::abs;
 */
 
 // FILE OUTPUT //
-size_t g_worldLogIdx = -1;
+int g_worldLogIdx = -1;
 string g_worldLogOutDir = "";
 std::ofstream g_worldLogStream;
 
@@ -342,7 +345,7 @@ void launchSimulations(std::ostream& output_buf, glm::vec4* pos_buf) {
 }
 
 int main(int argc, char**argv) {
-    if (argc < 2 || argc == 4) {
+    if (argc < 2 || argc == 3) {
         cout << "Usage: ./executable <number of worlds/blocks> [world idx to log] [output file directory] " << endl;
         return 0;
     }
@@ -355,8 +358,8 @@ int main(int argc, char**argv) {
 
     // Assuming world index AND output directory are given, then we will view 
     glm::vec4* pos_buf = nullptr;
-    if (argc == 5) {
-        g_worldLogIdx = (size_t)std::stoull(argv[2]);
+    if (argc == 4) {
+        g_worldLogIdx = std::stoi(argv[2]);
         g_worldLogOutDir = string(argv[3]);
         pos_buf = new glm::vec4[g_numParticles];
 
@@ -369,8 +372,14 @@ int main(int argc, char**argv) {
         if (g_worldLogOutDir[g_worldLogOutDir.size() - 1] != '/') {
             g_worldLogOutDir += "/";
         }
+        
+        // https://stackoverflow.com/questions/16357999/current-date-and-time-as-string
+        auto t = std::time(0);
+        auto tm = *std::localtime(&t);
 
-        g_worldLogStream = std::ofstream(g_worldLogOutDir + "world_" + std::to_string(g_worldLogIdx) + ".csv");
+        std::ostringstream oss;
+        oss << std::put_time(&tm, "%M:%S");
+        g_worldLogStream = std::ofstream(g_worldLogOutDir + "world_" + std::to_string(g_worldLogIdx) + "_" + oss.str() + ".csv");
         g_worldLogStream << "step,time,particle,x,y,z\n";
     }
 
@@ -385,7 +394,6 @@ int main(int argc, char**argv) {
     printf("Max threads per block: %zu, max shared memory (bytes): %zu, L2 cache size (bytes): %zu, global memory size: %zu\n", deviceProp.maxThreadsPerBlock, deviceProp.sharedMemPerBlock, deviceProp.l2CacheSize, deviceProp.totalGlobalMem);
     // FIXME: For now we literally get overflow if we do this because worlds * maxBlocks is used to calculate the bound
     g_maxBlocks = min((size_t)deviceProp.maxGridSize[0], (size_t)(1 << 16) - 1);
-
     printf("Batching in %zu worlds / %zu max blocks\n", g_numWorlds, g_maxBlocks);
     
     g_threadsPerBlock = dim3(g_numParticles);

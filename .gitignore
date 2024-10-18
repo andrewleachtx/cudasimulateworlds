@@ -17,6 +17,8 @@ cuda-samples/
 *.mp3
 *.ncu-rep
 
+results/*
+
 extra/
 build/
 out/

@@ -10,7 +10,6 @@
 #include <iostream>
 #include <vector>
 #include <random>
-#include <fstream>
 
 // GLM //
 #define GLM_FORCE_RADIANS

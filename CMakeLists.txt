@@ -7,7 +7,9 @@ PROJECT(CUDAWORLDSIMULATIONS LANGUAGES CXX CUDA)
 
 # CUDA
 enable_language(CUDA)
-include_directories("${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}")
+# set(CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES /usr/lib/cuda/include)
+# include_directories("${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}")
+include_directories("/usr/lib/cuda/include")
 
 set(CMAKE_CUDA_ARCHITECTURES 86)
 set(CMAKE_VERBOSE_MAKEFILE OFF)
