@@ -41,7 +41,8 @@ to `~/.profile` and `source ~/.bashrc`. To know it works, run `nvcc --version`.
    4. Note we should recall to offset our $\vec{x}[]$, $\vec{v}[]$, and $r[]$ arrays to account for the correct batch. Also, we should store a convergence flag per world, that way we can reason when there is local vs global convergence.
 
 ## Logging
-1. Of course when removing rendering, there is no longer a visual corresponding to the state. To view the simulation state over convergence period for a given world, you can input the viewing argument, an integer in [0, numWorlds) to view, as well as an output file, otherwise it will default to no output.
+1. With no rendering, you can view the simulation state for a given world by adding additional arguments `./<numWorlds> [world idx to log] [output file directory]` with the desired world index in `[0, numWorlds)`.
+2. The output file is formatted in a w
 
 ## Optimizations & New Features
 1. Moved to explicitly using `glm::vec4` with padding over `glm::vec3`. This is to use 16 bytes per call.

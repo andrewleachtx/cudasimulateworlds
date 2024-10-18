@@ -12,29 +12,6 @@ using std::vector, std::string, std::make_shared, std::shared_ptr;
 using std::stoi, std::stoul, std::min, std::max, std::numeric_limits, std::abs;
 
 /*
-TODO:
-    1. Initialization
-        - We need g_numWorlds * g_numParticles data
-            i) Initialize g_numWorlds instances of ParticleData()
-        - We could create a world class and tie the ParticleData* to it
-            ie. class world - int particlect, int id = ...
-    
-    2. Simulate
-        for world in worlds:
-            simulateKernel(ParticleData*)
-
-        simulateKernel is more difficult, we should 
-    
-    3. Logging
-        - We will need to look into options for this, i.e. we could export
-            --- TIME 0 ---
-            Particle 0: POS_0 VEL_0
-            Particle 1: POS_1 VEL_1
-            ...
-            Particle n-1: POS_n-1 VEL_n-1
-
-        into results/output
-
     3. Scaling / Output
         - Should be concise, don't need 1000 plots
         - We need to benchmark 1, 2, 4, 8, 16, 32, 64, 128 worlds
@@ -48,6 +25,11 @@ TODO:
         - After code is improved as much as possible, can start plotting
 
 */
+
+// FILE OUTPUT //
+size_t g_worldLogIdx = -1;
+string g_worldLogOutDir = "";
+std::ofstream g_worldLogStream;
 
 static const size_t g_numParticles = NUM_PARTICLES;
 static size_t g_numWorlds, g_maxBlocks;
@@ -288,9 +270,7 @@ __global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int
     vel[idx] = glm::vec4(v_new, 0.0f);
 }
 
-long long ctr = 10e9;
-
-void launchSimulations() {
+void launchSimulations(std::ostream& output_buf, glm::vec4* pos_buf) {
     int maxBlocks(g_maxBlocks), numWorlds(g_numWorlds);
     int batch_ct = (numWorlds + maxBlocks - 1) / maxBlocks;
 
@@ -306,6 +286,17 @@ void launchSimulations() {
         float* radii = g_particles.d_radii + (batch_offset * g_numParticles);
         int* c_flags = g_particles.d_convergenceFlags + (batch_offset);
 
+        // If specified, we will output a specific world's position data over time for each particle
+        if ((g_curStep % 500 == 0) && g_worldLogIdx != -1 && g_worldLogIdx >= batch_offset && g_worldLogIdx < batch_offset + batch_sz) {
+            int world_offset = (g_worldLogIdx - batch_offset) * g_numParticles;
+            cudaMemcpy(pos_buf, pos + world_offset, g_numParticles * sizeof(glm::vec4), cudaMemcpyDeviceToHost);
+
+            // csv format of |cur_step|cur_time|particle|x|y|z|
+            for (int p = 0; p < g_numParticles; p++) {
+                output_buf << g_curStep << "," << g_curTime << "," << p << "," << pos_buf[p].x << "," << pos_buf[p].y << "," << pos_buf[p].z << '\n';
+            }
+        }
+
         // Launch kernel, static size shared memory should be 64 * sizeof(glm::vec3) ~ 700 bytes per block should be ok
         // https://developer.nvidia.com/blog/using-shared-memory-cuda-cc/#static_shared_memory
         simulateKernel<<<batch_sz, g_threadsPerBlock>>>(pos, vel, radii, c_flags);
@@ -316,19 +307,14 @@ void launchSimulations() {
     }
 
     // Test copy buffer
-    if (ctr % 500 == 0 && ctr > 0) {
-        glm::vec4* pos_buffer = new glm::vec4[g_numParticles];
-        cudaMemcpy(pos_buffer, g_particles.d_position, g_numParticles * sizeof(glm::vec4), cudaMemcpyDeviceToHost);
-        for (int i = 0; i < 3; i++) {
-            printf("Particle %d Y: %f\n", i, pos_buffer[i].y);
-        }
-        printf("------------\n");
-
-        ctr--;
-    }
-    else {
-        ctr--;
-    }
+    // if (g_curStep % 500 == 0 && g_curStep > 0) {
+    //     glm::vec4* pos_buffer = new glm::vec4[g_numParticles];
+    //     cudaMemcpy(pos_buffer, g_particles.d_position, g_numParticles * sizeof(glm::vec4), cudaMemcpyDeviceToHost);
+    //     for (int i = 0; i < 3; i++) {
+    //         printf("Particle %d Y: %f\n", i, pos_buffer[i].y);
+    //     }
+    //     printf("------------\n");
+    // }
 
     gpuErrchk(cudaEventRecord(kernel_simStop));
     gpuErrchk(cudaEventSynchronize(kernel_simStop));
@@ -356,15 +342,36 @@ void launchSimulations() {
 }
 
 int main(int argc, char**argv) {
-    if (argc < 2) {
-        cout << "Usage: ./executable <number of worlds/blocks>" << endl;
+    if (argc < 2 || argc == 4) {
+        cout << "Usage: ./executable <number of worlds/blocks> [world idx to log] [output file directory] " << endl;
         return 0;
     }
 
-    g_numWorlds = std::stoi(argv[1]);
+    g_numWorlds = (size_t)std::stoull(argv[1]);
     if (g_numWorlds <= 0) {
         cerr << "Number of worlds must be > 0" << endl;
         return 1;
+    }
+
+    // Assuming world index AND output directory are given, then we will view 
+    glm::vec4* pos_buf = nullptr;
+    if (argc == 5) {
+        g_worldLogIdx = (size_t)std::stoull(argv[2]);
+        g_worldLogOutDir = string(argv[3]);
+        pos_buf = new glm::vec4[g_numParticles];
+
+        if (g_worldLogIdx >= g_numWorlds) {
+            cerr << "World log index must be in [0, numWorlds)!" << endl;
+            return 1;
+        }
+
+        // If missing '/' don't exit, just add it
+        if (g_worldLogOutDir[g_worldLogOutDir.size() - 1] != '/') {
+            g_worldLogOutDir += "/";
+        }
+
+        g_worldLogStream = std::ofstream(g_worldLogOutDir + "world_" + std::to_string(g_worldLogIdx) + ".csv");
+        g_worldLogStream << "step,time,particle,x,y,z\n";
     }
 
     // Get GPU info https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#l2-cache-set-aside-for-persisting-accesses
@@ -394,7 +401,10 @@ int main(int argc, char**argv) {
     auto end = start + std::chrono::seconds(MAX_SIMULATE_TIME_SECONDS);
     
     while (!g_isGlobalConverged && (std::chrono::high_resolution_clock::now() < end)) {
-        launchSimulations();
+        launchSimulations(g_worldLogStream, pos_buf);
+        
+        g_curStep++;
+        g_curTime = g_curStep * DT_SIMULATION;
     }
     
     // Convergence time
@@ -418,6 +428,10 @@ int main(int argc, char**argv) {
     cudaEventDestroy(kernel_simStart);
     cudaEventDestroy(kernel_simStop);
     delete[] h_convergenceFlags;
+    if (g_worldLogIdx != -1) {
+        g_worldLogStream.close();
+        delete[] pos_buf;
+    }
 
     return 0;
 }

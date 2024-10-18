@@ -63,6 +63,18 @@ __host__ __device__ void ParticleData::copyToDevice() {
     gpuErrchk(cudaMemcpy(d_position, h_position.data(), instances * sizeof(glm::vec4), cudaMemcpyHostToDevice));
     gpuErrchk(cudaMemcpy(d_velocity, h_velocity.data(), instances * sizeof(glm::vec4), cudaMemcpyHostToDevice));
     gpuErrchk(cudaMemcpy(d_radii, h_radii.data(), instances * sizeof(float), cudaMemcpyHostToDevice));
+
+    // After copying, we can free the space https://cplusplus.com/reference/vector/vector/shrink_to_fit/
+    h_position.clear();
+    h_velocity.clear();
+    h_radii.clear();
+    h_position.shrink_to_fit();
+    h_velocity.shrink_to_fit();
+    h_radii.shrink_to_fit();
+
+    assert(h_position.size() == 0);
+    assert(h_velocity.size() == 0);
+    assert(h_radii.size() == 0);
 }
 
 // Arbitrary population of on-host memory for rendering with vsh & fsh
