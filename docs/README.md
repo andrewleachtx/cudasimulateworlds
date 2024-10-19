@@ -55,6 +55,16 @@ to `~/.profile` and `source ~/.bashrc`. To know it works, run `nvcc --version`.
    1. Simulation "convergence" is decided by the `&&` of all each particle's $\vec{v} = 0$. This would normally be a race condition, but we can use `atomicAnd` to get all of them at once efficiently and safely.
    2. To gracefully handle particle collisions, we can store $\Delta \vec{v_{ki}}\left[n\right]$, and as $n$ is constant, we can do this at compile time (otherwise we could use `extern __shared__ glm::vec3 s_dv[]` and update device properties).
    3. We have `deviceProp.sharedMemPerBlockbytes` of shared memory available to us per block - because this is such a small region (48 KB on 4090) we are using a `vec3` regardless of padding / time concerns. Then we have $\frac{\text{shared memory}}{sizeof(vec3)}$ particles at a max. Assuming 48 KB, that would be $\frac{48 * 2^{10}}{12} = 4096$ particles. Well over enough for our fixed amount $n = 64$.
+3. The `ncu` (Nsight Compute) results I addressed based on 256 worlds using a 2080 SUPER are:
+   1. Uncoalesced Global Accesses (est. 57.67% speedup)
+      1. 68% of total sectors were excessive, meaning for each chunk of data I globally requested, I was only using 32% of it.
+      2. The bulk of this comes from 
+   2. Uncoalesced Shared Accesses (est. 71.79%) speedup
+      1. tbd
+   3. Warp Divergence 
+      1. It is clear from the **Warp State Statistics** tab that many of my warps are stalling, which I believe to be caused by a wait after synchronization.
+      2. The line accounting for the most stall sampling is the header of this for loop: `for (int i = 0; i < d_numPlanes; i++) {`
+ 
 
 ## Plots & Images
 

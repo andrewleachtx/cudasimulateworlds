@@ -14,22 +14,6 @@ using std::cout, std::cerr, std::endl;
 using std::vector, std::string, std::make_shared, std::shared_ptr;
 using std::stoi, std::stoul, std::min, std::max, std::numeric_limits, std::abs;
 
-/*
-    3. Scaling / Output
-        - Should be concise, don't need 1000 plots
-        - We need to benchmark 1, 2, 4, 8, 16, 32, 64, 128 worlds
-        - We should evaluate convergence time and maybe some other measure?
-            i) Could do the min, avg, max of time convergence per worldcount
-        - Can provide 1-2 insightful NCU charts and what they meant for optimization
-
-    4. Optimization
-        - Use NCU / timings to evaluate the bottlenecks, from there document
-          rewrites
-        - After code is improved as much as possible, can start plotting
-
-*/
-
-// FILE OUTPUT //
 int g_worldLogIdx = -1;
 string g_worldLogOutDir = "";
 std::ofstream g_worldLogStream;
@@ -38,7 +22,8 @@ static const size_t g_numParticles = NUM_PARTICLES;
 static size_t g_numWorlds, g_maxBlocks;
 static int* h_convergenceFlags;
 static bool g_isGlobalConverged(false);
-float g_curTime(0.0f);
+std::chrono::high_resolution_clock::time_point g_progStart;
+float g_curStepTime(0.0f);
 long long g_curStep(0);
 
 // Device Hyperparameters - Constant Space //
@@ -47,7 +32,7 @@ __constant__ size_t d_numWorlds, d_numPlanes;
 __constant__ glm::vec4 d_planeP[6], d_planeN[6];
 
 bool g_is_simFrozen(false);
-cudaEvent_t kernel_simStart, kernel_simStop;
+cudaEvent_t cudaEvt_simStart, cudaEvt_simStop;
 
 // blocks = k, threads = n
 dim3 g_blocksPerGrid;
@@ -55,7 +40,7 @@ dim3 g_threadsPerBlock;
 
 // static const int g_timeSampleSz = KERNEL_TIMING_SAMPLESZ;
 static size_t g_timeSampleCt = 0;
-static float g_totalKernelTimes = 0.0f;
+static float g_totalKernelTime(0.0f), g_totalBatchLoopTime(0.0f);
 
 ParticleData g_particles;
 PlaneData g_planes;
@@ -66,8 +51,8 @@ static void init() {
 
     // CUDA //
         gpuErrchk(cudaSetDevice(0));
-        cudaEventCreate(&kernel_simStart);
-        cudaEventCreate(&kernel_simStop);
+        cudaEventCreate(&cudaEvt_simStart);
+        cudaEventCreate(&cudaEvt_simStop);
 
     // Planes //
         const float plane_width = 540.0f;
@@ -222,7 +207,6 @@ __global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int
     glm::vec3 x_cur(pos[idx]), v_cur(vel[idx]);
     glm::vec3 x_new(x_cur), v_new(v_cur);
 
-    // printf("1\n");
     while (max_iter && dt_remaining > FLOAT_EPS) {
         // Within the timestep multiple collisions are possible, so we will have to reuse the shared memory 
         s_dv[particleIdx] = glm::vec3(0.0f);
@@ -247,7 +231,6 @@ __global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int
         dt_remaining -= dt;
         max_iter--;
     }
-    // printf("2\n");
 
     // We can do our convergence check here
     int is_stopped = 0;
@@ -259,10 +242,6 @@ __global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int
     // The and of all 64 particles being stopped in this world being 1 represents full convergence
     atomicAnd(&s_converged, is_stopped);
 
-    // printf("3\n");
-    // __syncthreads();
-    // printf("4\n");
-
     // No need for atomic here, only the first thread will update the flag
     if (particleIdx == 0) {
         convergeFlags[simulationIdx] = s_converged;
@@ -273,12 +252,11 @@ __global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int
     vel[idx] = glm::vec4(v_new, 0.0f);
 }
 
-void launchSimulations(std::ostream& output_buf, glm::vec4* pos_buf) {
-    int maxBlocks(g_maxBlocks), numWorlds(g_numWorlds);
+void launchSimulations(std::ostream& output_buf, glm::vec4* pos_buf, vector<float>& h_worldConvergenceTimes) {
+    size_t maxBlocks(g_maxBlocks), numWorlds(g_numWorlds);
     int batch_ct = (numWorlds + maxBlocks - 1) / maxBlocks;
 
-    gpuErrchk(cudaEventRecord(kernel_simStart));
-
+    auto t_batchLoopStart = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < batch_ct; i++) {
         int batch_offset = i * maxBlocks;
         int batch_sz = std::min(maxBlocks, numWorlds - batch_offset);
@@ -296,57 +274,58 @@ void launchSimulations(std::ostream& output_buf, glm::vec4* pos_buf) {
 
             // csv format of |cur_step|cur_time|particle|x|y|z|
             for (int p = 0; p < g_numParticles; p++) {
-                output_buf << g_curStep << "," << g_curTime << "," << p << "," << pos_buf[p].x << "," << pos_buf[p].y << "," << pos_buf[p].z << '\n';
+                output_buf << g_curStep << "," << g_curStepTime << "," << p << "," << pos_buf[p].x << "," << pos_buf[p].y << "," << pos_buf[p].z << '\n';
             }
         }
 
         // Launch kernel, static size shared memory should be 64 * sizeof(glm::vec3) ~ 700 bytes per block should be ok
         // https://developer.nvidia.com/blog/using-shared-memory-cuda-cc/#static_shared_memory
+        gpuErrchk(cudaEventRecord(cudaEvt_simStart));
         simulateKernel<<<batch_sz, g_threadsPerBlock>>>(pos, vel, radii, c_flags);
+        gpuErrchk(cudaEventRecord(cudaEvt_simStop));
+        gpuErrchk(cudaEventSynchronize(cudaEvt_simStop));
 
         // FIXME: Do we need to sync here? 
-        gpuErrchk(cudaDeviceSynchronize());
+        // gpuErrchk(cudaDeviceSynchronize());
         gpuErrchk(cudaGetLastError());
     }
-
-    // Test copy buffer
-    // if (g_curStep % 500 == 0 && g_curStep > 0) {
-    //     glm::vec4* pos_buffer = new glm::vec4[g_numParticles];
-    //     cudaMemcpy(pos_buffer, g_particles.d_position, g_numParticles * sizeof(glm::vec4), cudaMemcpyDeviceToHost);
-    //     for (int i = 0; i < 3; i++) {
-    //         printf("Particle %d Y: %f\n", i, pos_buffer[i].y);
-    //     }
-    //     printf("------------\n");
-    // }
-
-    gpuErrchk(cudaEventRecord(kernel_simStop));
-    gpuErrchk(cudaEventSynchronize(kernel_simStop));
+    auto t_batchLoopStop = std::chrono::high_resolution_clock::now();
+    auto t_batchLoopTime = std::chrono::duration_cast<std::chrono::milliseconds>(t_batchLoopStop - t_batchLoopStart).count();
 
     // Global Convergence //
     bool is_globalConverged = true;
     cudaMemcpy(h_convergenceFlags, g_particles.d_convergenceFlags, numWorlds * sizeof(int), cudaMemcpyDeviceToHost);
     for (int i = 0; i < numWorlds; i++) {
         is_globalConverged = is_globalConverged && h_convergenceFlags[i];
+        
+        if (BENCHMARK && h_convergenceFlags[i] && h_worldConvergenceTimes[i] < 0.0f) {
+            auto conv_time = std::chrono::high_resolution_clock::now() - g_progStart;
+            auto conv_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(conv_time).count();
+            h_worldConvergenceTimes[i] = (float)conv_time_ms;
+        }
     }
 
     // Could just set it equal, but this way we avoid global access :)
-    // I guess this begs the question: is time(local read + evaluate) < (global read + write) ?
     if (is_globalConverged) {
         g_isGlobalConverged = true;
     }
 
     // Benchmarking //
     if (BENCHMARK) {
-        float kernel_time;
-        cudaEventElapsedTime(&kernel_time, kernel_simStart, kernel_simStop);
-        g_totalKernelTimes += kernel_time;
+        float t_kernel;
+        cudaEventElapsedTime(&t_kernel, cudaEvt_simStart, cudaEvt_simStop);
+        g_totalKernelTime += t_kernel;
+
+        float t_batchLoop = (float)t_batchLoopTime;
+        g_totalBatchLoopTime += t_batchLoop;
+
         g_timeSampleCt++;
     }
 }
 
 int main(int argc, char**argv) {
     if (argc < 2 || argc == 3) {
-        cout << "Usage: ./executable <number of worlds/blocks> [world idx to log] [output file directory] " << endl;
+        cout << "Usage: ./executable <number of worlds/blocks> [world idx to log] [output file directory=../test/results/simdata] " << endl;
         return 0;
     }
 
@@ -372,14 +351,18 @@ int main(int argc, char**argv) {
         if (g_worldLogOutDir[g_worldLogOutDir.size() - 1] != '/') {
             g_worldLogOutDir += "/";
         }
-        
+
+        cout << "[ALOG] Writing state output to " << g_worldLogOutDir << " for world " << g_worldLogIdx << endl;
+
         // https://stackoverflow.com/questions/16357999/current-date-and-time-as-string
         auto t = std::time(0);
         auto tm = *std::localtime(&t);
 
         std::ostringstream oss;
-        oss << std::put_time(&tm, "%M:%S");
-        g_worldLogStream = std::ofstream(g_worldLogOutDir + "world_" + std::to_string(g_worldLogIdx) + "_" + oss.str() + ".csv");
+        oss << std::put_time(&tm, "%M_%S");
+
+        string output_fname = "world_" + std::to_string(g_worldLogIdx) + "_" + oss.str() + ".csv";
+        g_worldLogStream = std::ofstream(g_worldLogOutDir + output_fname);
         g_worldLogStream << "step,time,particle,x,y,z\n";
     }
 
@@ -390,51 +373,71 @@ int main(int argc, char**argv) {
     cudaGetDevice(&device);
     cudaGetDeviceProperties(&deviceProp, device);
 
-    printf("Max grid sizes per dimension are x = %d, y = %d, z = %d\n", deviceProp.maxGridSize[0], deviceProp.maxGridSize[1], deviceProp.maxGridSize[2]);
-    printf("Max threads per block: %zu, max shared memory (bytes): %zu, L2 cache size (bytes): %zu, global memory size: %zu\n", deviceProp.maxThreadsPerBlock, deviceProp.sharedMemPerBlock, deviceProp.l2CacheSize, deviceProp.totalGlobalMem);
+    printf("[INFO] Max grid sizes per dimension are x = %d, y = %d, z = %d\n", deviceProp.maxGridSize[0], deviceProp.maxGridSize[1], deviceProp.maxGridSize[2]);
+    printf("[INFO] Max threads per block: %zu, max shared memory (b): %zu, L2 cache size (b): %zu, global memory size (b): %zu\n", deviceProp.maxThreadsPerBlock, deviceProp.sharedMemPerBlock, deviceProp.l2CacheSize, deviceProp.totalGlobalMem);
     // FIXME: For now we literally get overflow if we do this because worlds * maxBlocks is used to calculate the bound
-    g_maxBlocks = min((size_t)deviceProp.maxGridSize[0], (size_t)(1 << 16) - 1);
-    printf("Batching in %zu worlds / %zu max blocks\n", g_numWorlds, g_maxBlocks);
+    // g_maxBlocks = min((size_t)deviceProp.maxGridSize[0], (size_t)(1 << 28) - 1);
+    g_maxBlocks = min((size_t)deviceProp.maxGridSize[0], (size_t)(1 << 28) - 1);
+    printf("[INFO] Batching in %zu worlds / %zu max blocks\n", g_numWorlds, g_maxBlocks);
     
     g_threadsPerBlock = dim3(g_numParticles);
-
-    printf("Setting g_blocksPerGrid = dim3(min(%zu, %zu))\n", g_numWorlds, g_maxBlocks);
+    printf("[INFO] Setting g_blocksPerGrid = dim3(min(%zu, %zu))\n", g_numWorlds, g_maxBlocks);
     g_blocksPerGrid = dim3(std::min(g_numWorlds, g_maxBlocks));
 
     // Initialize planes, particles, cuda buffers
     init();
 
     // Program converges when the last moving particle "stops", or the max time is exceeded.
-    auto start = std::chrono::high_resolution_clock::now();
-    auto end = start + std::chrono::seconds(MAX_SIMULATE_TIME_SECONDS);
-    
+    g_progStart = std::chrono::high_resolution_clock::now();
+    auto end = g_progStart + std::chrono::seconds(MAX_SIMULATE_TIME_SECONDS);
+
+    vector<float> h_worldConvergenceTimes(g_numWorlds, -1.0f);
     while (!g_isGlobalConverged && (std::chrono::high_resolution_clock::now() < end)) {
-        launchSimulations(g_worldLogStream, pos_buf);
+        launchSimulations(g_worldLogStream, pos_buf, h_worldConvergenceTimes);
         
         g_curStep++;
-        g_curTime = g_curStep * DT_SIMULATION;
+        g_curStepTime = g_curStep * DT_SIMULATION;
     }
     
     // Convergence time
-    auto conv_time = std::chrono::high_resolution_clock::now() - start;
+    auto conv_time = std::chrono::high_resolution_clock::now() - g_progStart;
     auto conv_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(conv_time).count();
-    printf("Actual program time: %ld ms\n", conv_time_ms);
+    printf("[BENCHMARK] Actual program time: %ld ms\n", conv_time_ms);
 
     // Print Timings //
     if (BENCHMARK) {
-        float overall = g_totalKernelTimes;
-        float avg = g_totalKernelTimes / g_timeSampleCt;
-        float usage = g_totalKernelTimes / (conv_time_ms);
+        float overall = g_totalKernelTime;
+        float avg = g_totalKernelTime / g_timeSampleCt;
+        float usage = g_totalKernelTime / (conv_time_ms);
 
-        printf("Number of threads: %d, number of blocks (per grid): %d\n", g_threadsPerBlock.x, g_blocksPerGrid.x);
-        printf("Average simulateKernel() execution time over %d samples: %f ms\n", g_timeSampleCt, avg);
-        printf("Overall kernel time before convergence: %f ms\n", overall);
-        printf("Kernel time / total program time: %f\n", usage);
+        printf("[BENCHMARK] threadsPerBlock=particlesPerWorld: %d, blocksPerGrid=numWorlds: %d\n", g_threadsPerBlock.x, g_blocksPerGrid.x);
+        printf("[BENCHMARK] Average individual simulateKernel() time over %d samples: %f ms\n", g_timeSampleCt, avg);
+        printf("[BENCHMARK] Total time spent in kernel before global convergence: %f ms\n", overall);
+        printf("[BENCHMARK] Kernel time / total program time: %f\n", usage);
+        printf("[BENCHMARK] ----------------------------------\n");
+        printf("[BENCHMARK] Total time sending and executing batches of simulateKernel(): %f ms\n", g_totalBatchLoopTime);
+        printf("[BENCHMARK] Average time per batch loop: %f ms\n", g_totalBatchLoopTime / g_timeSampleCt);
+
+        float minConvTime(std::numeric_limits<float>::max()), maxConvTime(0.0f), avgConvTime(0.0f);
+        for (int i = 0; i < g_numWorlds; i++) {
+            if (h_worldConvergenceTimes[i] < minConvTime) {
+                minConvTime = h_worldConvergenceTimes[i];
+            }
+
+            if (h_worldConvergenceTimes[i] > maxConvTime) {
+                maxConvTime = h_worldConvergenceTimes[i];
+            }
+
+            avgConvTime += h_worldConvergenceTimes[i];
+        }
+        
+        avgConvTime /= g_numWorlds;
+        printf("[BENCHMARK] (Local) Min convergence time: %f ms, Max convergence time: %f ms, Avg convergence time: %f ms\n", minConvTime, maxConvTime, avgConvTime);
     }
 
     // Cleanup //
-    cudaEventDestroy(kernel_simStart);
-    cudaEventDestroy(kernel_simStop);
+    cudaEventDestroy(cudaEvt_simStart);
+    cudaEventDestroy(cudaEvt_simStop);
     delete[] h_convergenceFlags;
     if (g_worldLogIdx != -1) {
         g_worldLogStream.close();

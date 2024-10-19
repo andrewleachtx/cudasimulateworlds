@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.16)
 # Name of the project
 include(CheckLanguage)
 
-PROJECT(CUDAWORLDSIMULATIONS LANGUAGES CXX CUDA)
+PROJECT(CUDASIMULATEWORLDS LANGUAGES CXX CUDA)
 
 # CUDA
 enable_language(CUDA)

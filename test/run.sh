@@ -1,33 +1,50 @@
 #!/bin/bash
 
-# thread_sizes=(32 64 128 256 512 1024)
-# particle_sizes=(1 100 1000 100000 1000000 10000000 50000000 100000000 500000000 750000000) 
+# This is all based on the assumption you execute from test/
 
-# # https://stackoverflow.com/questions/17066250/create-timestamp-variable-in-bash-script
-# timestamp_hash=$(date +%s)
+# Default exponent range
+n_start=0
+n_end=16
 
-# # for i in "${array[@]}"
-# for n in "${particle_sizes[@]}"; do
-#     for threads in "${thread_sizes[@]}"; do
-#         output_dir="./results/cout/${n}"
-#         mkdir -p $output_dir
-#         output_file="${output_dir}/${n}_particles_${threads}_threads_${timestamp_hash}.txt"
+# Generate array of world counts: world_counts=(2^n_start, 2^(n_start+1), ..., 2^n_end)
+world_counts=()
+for (( n=n_start; n<=n_end; n++ )); do
+    world_counts+=( $((2**n)) )
+done
 
-#         echo "---------------------------" | tee -a $output_file
-#         echo "Running with $n Particles and $threads Threads per block:" | tee -a $output_file
+echo "World counts to simulate: ${world_counts[@]}"
 
-#         build/CUDAPOINTCOLLISIONS $n $threads >> $output_file 2>&1
-
-#         echo "Finished running with $n Particles and $threads Threads per block" | tee -a $output_file
-#     done
-# done
-
-# echo "Finished all simulations"
-
-world_counts=(1 2 4 8 16 32 64 128 256 512 1024 2048 4096 8192 16384 32768 65536)
-# https://stackoverflow.com/questions/17066250/create-timestamp-variable-in-bash-script
 timestamp_hash=$(date +%s)
 
+output_dir="./results/stdout"
+mkdir -p $output_dir
+
+# Prefer release but use debug otherwise
+executable_path="../build/Release/CUDASIMULATEWORLDS"
+if [ ! -f $executable_path ]; then
+    executable_path="../build/Debug/CUDASIMULATEWORLDS"
+fi
+
+# Optional args for logging world, off for benchmark runs
+world_log_idx=-1
+simdata_output_dir="./results/simdata"
+
+# Loop over each world count
 for w in "${world_counts[@]}"; do
-    
+    output_file="${output_dir}/out_${w}.txt"
+
+    echo "---------------------------" | tee -a $output_file
+    echo "Running with $w Worlds:" | tee -a $output_file
+
+    if [ "$world_log_idx" -ge 0 ]; then
+        # Run the simulation with world logging enabled
+        $executable_path $w $world_log_idx $simdata_output_dir >> $output_file 2>&1
+    else
+        # Run the simulation without world logging
+        $executable_path $w >> $output_file 2>&1
+    fi
+
+    echo "Finished running with $w Worlds" | tee -a $output_file
 done
+
+echo "Finished all simulations"

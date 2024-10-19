@@ -28,7 +28,7 @@ __host__ __device__ ParticleData::ParticleData(size_t numParticles, size_t numWo
         exit(1);
     }
     else {
-        cout << "Allocating " << mem_required << " of " << total << " bytes on device" << endl;
+        cout << "[INFO] Allocating " << mem_required << " of " << total << " bytes on device" << endl;
     }
 
     gpuErrchk(cudaMalloc(&d_position, k * n * sizeof(glm::vec4)));
