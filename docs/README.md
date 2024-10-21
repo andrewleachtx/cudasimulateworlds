@@ -3,43 +3,49 @@ The goal of this project is to run $k$ parallel worlds simulating particles with
 
 Simulation states are not rendered; you can output the $ith$ world simulation state data if you specify to.
 
-## Dependencies (Linux)
-1. To get the VM CUDA to run, append
+## Dependencies (Linux) & Building
+1. CUDA `12.x` is **necessary** for this code. It is recommended to use `12.6`, which you can download on the NVIDIA Toolkit website. You can add the cuda version to your path with
 ```sh
 export PATH=/usr/local/cuda-11.7/bin$PATH
 ```
 to `~/.profile` and `source ~/.bashrc`. To know it works, run `nvcc --version`.
 
 2. Install GLM somewhere - I added an environment variable `export GLM_INCLUDE_DIR=~/packages/glm` to my `.profile` and got the code from [here](https://github.com/g-truc/glm/tree/master). Feel free to just modify `CMakeLists.txt` to point to your glm installation if its local to the project, or elsewhere.
+3. Run `cmake -B build -DCMAKE_BUILD_TYPE=Release` from project root, then run `cmake --build build`.
+4. To execute, you can play with `run.sh` or run `build/CUDASIMULATEWORLDS <num_worlds> [log_world_idx] [output_dir="../test/results/simdata"]`. You can log a world and its state output over an arbitrary timestep (defined in `main.cu`) by adding the optional arguments specified above.
 
 ## Helpful Commands
 - `cat /etc/os-release` shows the distro and device architecture.
-- `nvidia-smi` provides basic GPU information (assuming it is a NVIDIA gpu).
+- `nvidia-smi` (append `-l <second interval>` for repeated updates) basic GPU information (assuming it is a NVIDIA gpu).
 - `ncu --target-processes all -o <report name> <executable> [executable args]` will generate a compute report over all kernels given some executable and its args.
-- `"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\extras\demo_suite\deviceQuery.exe"` (or wherever it is located) will provide even more specific device information.
+- `"...\NVIDIA GPU Computing Toolkit\CUDA\v12.6\extras\demo_suite\deviceQuery"` (or wherever it is located) provides fine-grained information and details about the GPU and its processing power.
 
 ## GPU Specifications
-1. TODO: Insert a chart differentiating the 4090, 2080 SUPER, and A2000 using deviceQuery.exe 
+Relevant specs for GPUs used in development - the 4090 is on a Linux server, while the A2000 and 2080 SUPER were used locally. Device information was queried with `deviceQuery`
+| Query                       | NVIDIA GeForce RTX 4090          | NVIDIA RTX A2000 Laptop GPU       |
+|-----------------------------|----------------------------------|-----------------------------------|
+| **CUDA Driver Version**     | 12.6                             | 12.6                              |
+| **CUDA Compute Capability** | 8.9                              | 8.6                               |
+| **CUDA Cores**              | 16384                            | 2560                              |
+| **Total Global Memory**     | 24111 MiB (25282.28 MB)          | 4096 MiB (4294.51 MB)             |
+| **L2 Cache Size**           | 75497472 bytes (75.5 MiB)        | 2097152 bytes (2 MiB)             |
+| **Registers per Block**     | 65536                            | 65536                             |
+| **Constant Memory**         | 65536 bytes                      | 65536 bytes                       |
+| **Shared Memory per Block** | 49152 bytes                      | 49152 bytes                       |
 
 ## Notes
 1. Benchmarks were run on a **NVIDIA GeForce RTX 4090** with **CUDA 12.2**. For better access to the hardware and profiling, a RTX 2080 SUPER was used locally to debug and run against `ncu` to evaluate performance.
    1. The hope of using ncu to isolate inefficiencies is that they will scale to the benchmarks on the full-fledged 4090 GPU or standard.
-   2. 
 2. Each simulation "converges" when their last particle velocity reaches $\approx 0$. For the $ith$ world or simulation, this occurs when the "dead particle" counter reaches the size $n_i$ of that simulation.
-3. Thread size and particle size vary and are tested as hyperparameters. Block size is according to the following:
-   ```cpp
-    size_t problem_sz = g_particles.h_maxParticles;
-    g_blocksPerGrid = dim3((problem_sz + g_threadsPerBlock.x - 1) / g_threadsPerBlock.x);
-    ```
-4. `test/...` is where many of the .sh scripts were made to iterate over various particle sizes and thread counts.
+3. `test/...` is where many of the .sh scripts were made to iterate over various particle sizes and thread counts.
    1. The files are labeled in `cout/{particle ct}/`.
-5. GPU Memory:
+4. GPU Memory:
    1. Global
-      1. $kn$ particles are allocated into global memory. Each particle has a unique position $\vec{x_i}$, velocity $\vec{v_i}$ and radius $r_i$, which are stored as `vec4` and `float`, respectively. $$2 * sizeof(vec4) + sizeof(float) = 36 \text{ bytes per particle}$$
+      1. $kn$ particles are allocated into global memory. Each particle has a unique position $\vec{x_i}$, velocity $\vec{v_i}$ and radius $r_i$, which are stored as `vec4` and `float`, respectively. $$2 * sizeof(vec4) + sizeof(float) = 36 \text{ bytes per particle}$$ $$\implies kn \leq \frac{\text{max bytes}}{\text{sizeof(particle)}} = \frac{25282281472 \text{ bytes}}{36 \text{ bytes}} \approx 702,285,596$$ this is relevant because it means with $n = 64$ we can maximally allocate $\frac{702,285,596}{64} \approx 10973212$ **worlds.** Of course, this value is decreased greatly as not all of the theoretical maximum VRAM is usable for us. If you wanted to exceed this, you could invite CPU fallback memory with **unified memory**, but this is not enabled for us - although you would expect a great decrease in performance.
       2. For the $kth$ simulation we can access particle$_{ki}$ by designating 1 block to 1 simulation, and 1 thread to one particle. With $k$ blocks and $n$ threads, we have `blocksPerGrid` = $k$ and `threadsPerBlock` = $n$.
          1. It would look like this: `simulateKernel<<<blocksPerGrid=k, threadsPerBlock=n>>>`
          2. `simulationIdx = blockIdx.x`, `particleIdx = threadIdx.x` $\implies \text{particle}_{ki}$ `idx = simulationIdx * particleIdx`.
-6. Every instance of `simulateKernel` is one world; one simulation step for that entire world. If we have $k$ worlds and 1 block = 1 world, the bound is $min(k, \text{max GPU blocks})$. Eventually, we are going to actually exceed the number of available blocks on the GPU, as there are `deviceProp.maxGridSize[0]` blocks available to us.
+5. Every instance of `simulateKernel` is one world; one simulation step for that entire world. If we have $k$ worlds and 1 block = 1 world, the bound is $min(k, \text{max GPU blocks})$. Eventually, we are going to actually exceed the number of available blocks on the GPU, as there are `deviceProp.maxGridSize[0]` blocks available to us.
    1. This can be resolved by moving towards a batch approach of launching the kernels in our length $k$ loop, which introduces a degree of series execution as our loop runs $\lceil\frac{numWorlds}{\text{maxBlocks}}\rceil$ times.
    2. The batch size is the minimum of the remaining worlds to process and the maximum block size: $$\min(\text{maxBlocks}, \text{numWorlds} - (i * \text{maxBlocks}))$$
    3. Our number of batches, rewritten to use integer division's implicit floor: $$\left\lceil\frac{numWorlds}{maxBlocks}\right\rceil = \left\lfloor\frac{\text{numWorlds} + \text{maxBlocks} - 1}{maxBlocks}\right\rfloor$$
@@ -71,3 +77,8 @@ to `~/.profile` and `source ~/.bashrc`. To know it works, run `nvcc --version`.
 ## Obstacles
 1. While official benchmarks were run on the GeForce RTX 4090, for development a local GPU(s) was used to debug and run against `ncu` to evaluate performance.
    1. The hope of using ncu to isolate inefficiencies is that they will scale to the benchmarks on the full-fledged 4090 GPU or standard. 
+2. Somehow, linkage to critical CUDA files were lost or deleted on the Linux machine, including `/usr/local/cuda`. Much time was lost having to simply debugging and fixing compilation due to a standard library `std_function.h` function syntax.
+   1. Relinked my path to account for the missing `/usr/local/cuda` directory by finding and relinking to an existing CUDA version on the machine.
+   2. Added necessary lines to CMakeLists.txt to manually link to the correct version.
+   3. The only cuda version I could find was cuda `11.x`, which `nvcc` has known issues compiling `g++-11`. The fix is to update to a cuda `12.x` version, which is what I was using before it vanished, or downgrade to `g++-10` which doesn't contain the `std_function.h` conflict. However, `g++-10` is also not on the system, and without root access I can't install it.
+   4. To avoid losing further time awaiting administrator permissions, I locally installed the [CUDA 12.6 Toolkit](https://developer.nvidia.com/cuda-downloads?target_os=Linux&target_arch=x86_64&Distribution=Ubuntu&target_version=22.04&target_type=runfile_local) to my home (~) directory, and linked it there. There are still some failed linkages when building, i.e. `nvlink warning : Skipping incompatible '/lib/x86_64-linux-gnu/librt.a' when searching for -lrt` because the resource is gone, but they are not necessary.

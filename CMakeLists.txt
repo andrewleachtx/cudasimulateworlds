@@ -6,10 +6,13 @@ include(CheckLanguage)
 PROJECT(CUDASIMULATEWORLDS LANGUAGES CXX CUDA)
 
 # CUDA
+# find_package(CUDA REQUIRED)
 enable_language(CUDA)
-# set(CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES /usr/lib/cuda/include)
-# include_directories("${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}")
-include_directories("/usr/lib/cuda/include")
+IF (UNIX)
+    set(CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES "${HOME}/packages/cuda12.6/include")
+ENDIF()
+
+include_directories("${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}")
 
 set(CMAKE_CUDA_ARCHITECTURES 86)
 set(CMAKE_VERBOSE_MAKEFILE OFF)
@@ -34,7 +37,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CUDA_STANDARD 17)
 
 # Make sure to --expt-relaxed-constexpr, otherwise bad things will happen
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -G --generate-line-info --expt-relaxed-constexpr")
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --generate-line-info --expt-relaxed-constexpr")
 
 # Set the executable.
 ADD_EXECUTABLE(${CMAKE_PROJECT_NAME} ${CPP_SOURCES} ${CUDA_SOURCES} ${HEADERS} ${GLSL})
@@ -70,7 +73,7 @@ IF(WIN32)
     # -Wall produces way too many warnings.
     # -pedantic is not supported.
     # Disable warning 4996.
-    SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /wd4996 -g")
+    SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /wd4996")
     TARGET_LINK_LIBRARIES(${CMAKE_PROJECT_NAME} opengl32.lib)
     SET_PROPERTY(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${CMAKE_PROJECT_NAME})
 ELSE()

@@ -95,9 +95,9 @@ __device__ glm::vec3 getAcceleration(int idx, const glm::vec4* v) {
 
 static __device__ void solveConstraints(int idx, const glm::vec4* pos, const glm::vec4* vel, const float* radii,
                                  glm::vec3& x_new, glm::vec3& v_new, float& dt, const glm::vec3& a,
-                                 int simulationIdx, int particleIdx, glm::vec3* s_dv) {
+                                 int simulationIdx, int particleIdx, glm::vec3* s_dv, int& is_converged) {
     // Truncate the w component
-    const glm::vec3 x(pos[idx]), v(vel[idx]);
+    glm::vec3 x(pos[idx]), v(vel[idx]);
     const float r_i = radii[idx];
 
     // Particle-Particle Collisions //
@@ -149,6 +149,7 @@ static __device__ void solveConstraints(int idx, const glm::vec4* pos, const glm
 
     // Synchronize threads, because we don't want to start plane collisions until this is done
     __syncthreads();
+    v += s_dv[particleIdx];
     
     // Plane Collisions //
     for (int i = 0; i < d_numPlanes; i++) {
@@ -172,6 +173,12 @@ static __device__ void solveConstraints(int idx, const glm::vec4* pos, const glm
             x_new = x_collision;
             v_new = (abs(glm::dot(v_collision, n)) * n) + (v_tan);
         }
+
+        // Convergence or jitter check - (v = 0, "on" the plane, and acceleration towards plane)
+        if ((length(v_new) < STOP_VELOCITY) && (d_n < STOP_PLANE_DIST) && (dot(a, n) < FLOAT_EPS)) {
+            v_new = glm::vec4(0.0f);
+            is_converged = 1;
+        } 
     }
 }
 
@@ -203,6 +210,7 @@ __global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int
     float dt_remaining = DT_SIMULATION;
     float dt = dt_remaining;
     short max_iter = 10;
+    int is_stopped = 0;
     
     glm::vec3 x_cur(pos[idx]), v_cur(vel[idx]);
     glm::vec3 x_new(x_cur), v_new(v_cur);
@@ -221,7 +229,7 @@ __global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int
         __syncthreads();
 
         // Resolve particle-particle AND particle-plane position constraints
-        solveConstraints(idx, pos, vel, radii, x_new, v_new, dt, a, simulationIdx, particleIdx, s_dv);
+        solveConstraints(idx, pos, vel, radii, x_new, v_new, dt, a, simulationIdx, particleIdx, s_dv, is_stopped);
 
         __syncthreads();
 
@@ -230,13 +238,6 @@ __global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int
 
         dt_remaining -= dt;
         max_iter--;
-    }
-
-    // We can do our convergence check here
-    int is_stopped = 0;
-    if (length(v_new) < STOP_VELOCITY) {
-        v_new = glm::vec3(0.0f);
-        is_stopped = 1;
     }
 
     // The and of all 64 particles being stopped in this world being 1 represents full convergence
@@ -290,7 +291,6 @@ void launchSimulations(std::ostream& output_buf, glm::vec4* pos_buf, vector<floa
         gpuErrchk(cudaGetLastError());
     }
     auto t_batchLoopStop = std::chrono::high_resolution_clock::now();
-    auto t_batchLoopTime = std::chrono::duration_cast<std::chrono::milliseconds>(t_batchLoopStop - t_batchLoopStart).count();
 
     // Global Convergence //
     bool is_globalConverged = true;
@@ -300,8 +300,9 @@ void launchSimulations(std::ostream& output_buf, glm::vec4* pos_buf, vector<floa
         
         if (BENCHMARK && h_convergenceFlags[i] && h_worldConvergenceTimes[i] < 0.0f) {
             auto conv_time = std::chrono::high_resolution_clock::now() - g_progStart;
-            auto conv_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(conv_time).count();
-            h_worldConvergenceTimes[i] = (float)conv_time_ms;
+            float conv_time_ms = std::chrono::duration<float, std::milli>(conv_time).count();
+            
+            h_worldConvergenceTimes[i] = conv_time_ms;
         }
     }
 
@@ -316,8 +317,8 @@ void launchSimulations(std::ostream& output_buf, glm::vec4* pos_buf, vector<floa
         cudaEventElapsedTime(&t_kernel, cudaEvt_simStart, cudaEvt_simStop);
         g_totalKernelTime += t_kernel;
 
-        float t_batchLoop = (float)t_batchLoopTime;
-        g_totalBatchLoopTime += t_batchLoop;
+        float t_batchLoopTime = std::chrono::duration<float, std::milli>(t_batchLoopStop - t_batchLoopStart).count();
+        g_totalBatchLoopTime += t_batchLoopTime;
 
         g_timeSampleCt++;
     }
@@ -439,9 +440,9 @@ int main(int argc, char**argv) {
     cudaEventDestroy(cudaEvt_simStart);
     cudaEventDestroy(cudaEvt_simStop);
     delete[] h_convergenceFlags;
+    delete[] pos_buf;
     if (g_worldLogIdx != -1) {
         g_worldLogStream.close();
-        delete[] pos_buf;
     }
 
     return 0;

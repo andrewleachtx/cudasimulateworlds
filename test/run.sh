@@ -2,9 +2,9 @@
 
 # This is all based on the assumption you execute from test/
 
-# Default exponent range
-n_start=0
-n_end=16
+# We want values from 2^0 to 2^23, as 2^24 will not compile
+n_start=23
+n_end=23
 
 # Generate array of world counts: world_counts=(2^n_start, 2^(n_start+1), ..., 2^n_end)
 world_counts=()
@@ -20,10 +20,7 @@ output_dir="./results/stdout"
 mkdir -p $output_dir
 
 # Prefer release but use debug otherwise
-executable_path="../build/Release/CUDASIMULATEWORLDS"
-if [ ! -f $executable_path ]; then
-    executable_path="../build/Debug/CUDASIMULATEWORLDS"
-fi
+executable_path="../build/CUDASIMULATEWORLDS"
 
 # Optional args for logging world, off for benchmark runs
 world_log_idx=-1
