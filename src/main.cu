@@ -376,8 +376,7 @@ int main(int argc, char**argv) {
 
     printf("[INFO] Max grid sizes per dimension are x = %d, y = %d, z = %d\n", deviceProp.maxGridSize[0], deviceProp.maxGridSize[1], deviceProp.maxGridSize[2]);
     printf("[INFO] Max threads per block: %zu, max shared memory (b): %zu, L2 cache size (b): %zu, global memory size (b): %zu\n", deviceProp.maxThreadsPerBlock, deviceProp.sharedMemPerBlock, deviceProp.l2CacheSize, deviceProp.totalGlobalMem);
-    // FIXME: For now we literally get overflow if we do this because worlds * maxBlocks is used to calculate the bound
-    // g_maxBlocks = min((size_t)deviceProp.maxGridSize[0], (size_t)(1 << 28) - 1);
+    // There will never be a case where we need more than 10 million blocks as we can only cudaMalloc so much.
     g_maxBlocks = min((size_t)deviceProp.maxGridSize[0], (size_t)(1 << 28) - 1);
     printf("[INFO] Batching in %zu worlds / %zu max blocks\n", g_numWorlds, g_maxBlocks);
     
