@@ -3,8 +3,8 @@
 # This is all based on the assumption you execute from test/
 
 # We want values from 2^0 to 2^23, as 2^24 will not compile
-n_start=13
-n_end=13
+n_start=0
+n_end=23
 
 # Generate array of world counts: world_counts=(2^n_start, 2^(n_start+1), ..., 2^n_end)
 world_counts=()

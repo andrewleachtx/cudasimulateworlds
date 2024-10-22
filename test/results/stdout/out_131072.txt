@@ -15,3 +15,20 @@ Running with 131072 Worlds:
 [BENCHMARK] Average time per batch loop: 0.899374 ms
 [BENCHMARK] (Local) Min convergence time: 6893.251465 ms, Max convergence time: 9828.306641 ms, Avg convergence time: 7094.963867 ms
 Finished running with 131072 Worlds
+---------------------------
+Running with 131072 Worlds:
+[INFO] Max grid sizes per dimension are x = 2147483647, y = 65535, z = 65535
+[INFO] Max threads per block: 1024, max shared memory (b): 49152, L2 cache size (b): 75497472, global memory size (b): 25282281472
+[INFO] Batching in 131072 worlds / 268435455 max blocks
+[INFO] Setting g_blocksPerGrid = dim3(min(131072, 268435455))
+[INFO] Allocating 301989888 of 25282281472 bytes on device
+[BENCHMARK] Actual program time: 11310 ms
+[BENCHMARK] threadsPerBlock=particlesPerWorld: 64, blocksPerGrid=numWorlds: 131072
+[BENCHMARK] Average individual simulateKernel() time over 12790 samples: 0.764503 ms
+[BENCHMARK] Total time spent in kernel before global convergence: 9777.995117 ms
+[BENCHMARK] Kernel time / total program time: 0.864544
+[BENCHMARK] ----------------------------------
+[BENCHMARK] Total time sending and executing batches of simulateKernel(): 9829.352539 ms
+[BENCHMARK] Average time per batch loop: 0.768519 ms
+[BENCHMARK] (Local) Min convergence time: 6029.210449 ms, Max convergence time: 8590.168945 ms, Avg convergence time: 6211.833008 ms
+Finished running with 131072 Worlds

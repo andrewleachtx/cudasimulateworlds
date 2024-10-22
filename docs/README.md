@@ -1,22 +1,22 @@
 # CUDA World Simulations
-The goal of this project is to run $k$ parallel worlds simulating particles with collision checks (no optimizations; $n^2$ so $n \approx 64$) with each world being a ran as a kernel of its own.
+The goal of this project is to optimize the simulation of $k$ parallel worlds with colliding particle checks (no optimizations; $n^2$ so $n \approx 64$) with each world being a ran as a kernel of its own.
 
-Simulation states are not rendered; you can output the $ith$ world simulation state data if you specify to.
+Simulation states are not rendered; you can output position data for the $ith$ world if passed to the program.
 
-## Dependencies (Linux) & Building
+## Dependencies & Building
 1. CUDA `12.x` is **necessary** for this code. It is recommended to use `12.6`, which you can download on the NVIDIA Toolkit website. You can add the cuda version to your path with
-```sh
-export PATH=/usr/local/cuda-11.7/bin$PATH
-```
-to `~/.profile` and `source ~/.bashrc`. To know it works, run `nvcc --version`.
+    ```sh
+    export PATH=/usr/local/cuda-11.7/bin$PATH
+    ```
+    to `~/.profile` and `source ~/.bashrc`. To know it works, run `nvcc --version`.
 
-2. Install GLM somewhere - I added an environment variable `export GLM_INCLUDE_DIR=~/packages/glm` to my `.profile` and got the code from [here](https://github.com/g-truc/glm/tree/master). Feel free to just modify `CMakeLists.txt` to point to your glm installation if its local to the project, or elsewhere.
+2. Install [glm](https://github.com/g-truc/glm/tree/master) somewhere - I added an environment variable `export GLM_INCLUDE_DIR=~/packages/glm` to my `.profile`. You can also just modify `CMakeLists.txt` to point to your glm installation if it's stored local to the project or elsewhere.
 3. Run `cmake -B build -DCMAKE_BUILD_TYPE=Release` from project root, then run `cmake --build build`.
-4. To execute, you can play with `run.sh` or run `build/CUDASIMULATEWORLDS <num_worlds> [log_world_idx] [output_dir="../test/results/simdata"]`. You can log a world and its state output over an arbitrary timestep (defined in `main.cu`) by adding the optional arguments specified above.
+4. To execute, you can play with `test/run.sh` (run in `test/`) or run `build/CUDASIMULATEWORLDS <num_worlds> [log_world_idx] [output_dir="../test/results/simdata"]`. To view world and state output for a world, you can add the optional arguments specified above. Also, to control the interval of the csv (slows down execution) you can go to `src/constants.h` and change `WORLD_LOG_STEPSIZE`.
 
 ## Helpful Commands
 - `cat /etc/os-release` shows the distro and device architecture.
-- `nvidia-smi` (append `-l <second interval>` for repeated updates) basic GPU information (assuming it is a NVIDIA gpu).
+- `nvidia-smi` (append `-l <second interval>` for repeated updates) basic GPU and process information.
 - `ncu --target-processes all -o <report name> <executable> [executable args]` will generate a compute report over all kernels given some executable and its args.
 - `"...\NVIDIA GPU Computing Toolkit\CUDA\v12.6\extras\demo_suite\deviceQuery"` (or wherever it is located) provides fine-grained information and details about the GPU and its processing power.
 
@@ -41,11 +41,11 @@ Relevant specs for GPUs used in development - the 4090 is on a Linux server, whi
    1. The files are labeled in `cout/{particle ct}/`.
 4. GPU Memory:
    1. Global
-      1. $kn$ particles are allocated into global memory. Each particle has a unique position $\vec{x_i}$, velocity $\vec{v_i}$ and radius $r_i$, which are stored as `vec4` and `float`, respectively. $$2 * sizeof(vec4) + sizeof(float) = 36 \text{ bytes per particle}$$ $$\implies kn \leq \frac{\text{max bytes}}{\text{sizeof(particle)}} = \frac{25282281472 \text{ bytes}}{36 \text{ bytes}} \approx 702,285,596$$ this is relevant because it means with $n = 64$ we can maximally allocate $\frac{702,285,596}{64} \approx 10973212$ **worlds.** Of course, this value is decreased greatly as not all of the theoretical maximum VRAM is usable for us. If you wanted to exceed this, you could invite CPU fallback memory with **unified memory**, but this is not enabled for us - although you would expect a great decrease in performance.
+      1. $kn$ particles are allocated into global memory. Each particle has a unique position $\vec{x_i}$, velocity $\vec{v_i}$ and radius $r_i$, which are stored as `vec4` and `float`, respectively. $$2 * sizeof(vec4) + sizeof(float) = 36 \text{ bytes per particle}$$ $$\implies kn \leq \frac{\text{max bytes}}{\text{sizeof(particle)}} = \frac{25282281472 \text{ bytes}}{36 \text{ bytes}} \approx 702,285,596$$ this is relevant because it means with $n = 64$, we can maximally allocate $\frac{702,285,596}{64} \approx 10973212$ **worlds.** Of course, this value is decreased greatly as not all of the theoretical maximum VRAM is usable for us. If you wanted to exceed this, you could invite CPU fallback memory with **unified memory** at the cost of performance - but this is not enabled for us.
       2. For the $kth$ simulation we can access particle$_{ki}$ by designating 1 block to 1 simulation, and 1 thread to one particle. With $k$ blocks and $n$ threads, we have `blocksPerGrid` = $k$ and `threadsPerBlock` = $n$.
          1. It would look like this: `simulateKernel<<<blocksPerGrid=k, threadsPerBlock=n>>>`
          2. `simulationIdx = blockIdx.x`, `particleIdx = threadIdx.x` $\implies \text{particle}_{ki}$ `idx = simulationIdx * particleIdx`.
-5. Every instance of `simulateKernel` is one world; one simulation step for that entire world. If we have $k$ worlds and 1 block = 1 world, the bound is $min(k, \text{max GPU blocks})$. Eventually, we are going to actually exceed the number of available blocks on the GPU, as there are `deviceProp.maxGridSize[0]` blocks available to us.
+5. Every instance of `simulateKernel` is one world; one simulation step for that entire world. If we have $k$ worlds and 1 block = 1 world, the bound is $min(k, \text{max GPU blocks})$. Eventually, we are going to actually exceed the number of available blocks on the GPU, as there are `deviceProp.maxGridSize[0]` blocks available to us. **In practice, because the 4090's maxBlocks = 2,147,483,647** and $k \leq 10,973,212$ there is no point in this, but it is supported in the code as it was a concern at first.
    1. This can be resolved by moving towards a batch approach of launching the kernels in our length $k$ loop, which introduces a degree of series execution as our loop runs $\lceil\frac{numWorlds}{\text{maxBlocks}}\rceil$ times.
    2. The batch size is the minimum of the remaining worlds to process and the maximum block size: $$\min(\text{maxBlocks}, \text{numWorlds} - (i * \text{maxBlocks}))$$
    3. Our number of batches, rewritten to use integer division's implicit floor: $$\left\lceil\frac{numWorlds}{maxBlocks}\right\rceil = \left\lfloor\frac{\text{numWorlds} + \text{maxBlocks} - 1}{maxBlocks}\right\rfloor$$
@@ -53,7 +53,7 @@ Relevant specs for GPUs used in development - the 4090 is on a Linux server, whi
 
 ## Logging
 1. With no rendering, you can view the simulation state for a given world by adding additional arguments `./<numWorlds> [world idx to log] [output file directory]` with the desired world index in `[0, numWorlds)`.
-2. The output file is formatted in a w
+2. The output file is formatted as a `.csv` with `step,time,particle,x,y,z`. These are in `rest/results/simdata`
 
 ## Optimizations & New Features
 1. Moved to explicitly using `glm::vec4` with padding over `glm::vec3`. This is to use 16 bytes per instance. Originally, casts to `glm::vec3` were made, but this seemed a bit redundant and made new allocations - refactored to just ignore the w term.
@@ -61,7 +61,7 @@ Relevant specs for GPUs used in development - the 4090 is on a Linux server, whi
    1. Simulation "convergence" is decided by the `&&` of all each particle's $\vec{v} = 0$. This would normally be a race condition, but we can use `atomicAnd` to get all of them at once efficiently and safely.
    2. To gracefully handle particle collisions, we can store $\Delta \vec{v_{ki}}\left[n\right]$, and as $n$ is constant, we can do this at compile time (otherwise we could use `extern __shared__ glm::vec3 s_dv[]` and update device properties).
    3. We have `deviceProp.sharedMemPerBlockbytes` of shared memory available to us per block - because this is such a small region (48 KB on 4090) we are using a `vec3` regardless of padding / time concerns. Then we have $\frac{\text{shared memory}}{sizeof(vec3)}$ particles at a max. Assuming 48 KB, that would be $\frac{48 * 2^{10}}{12} = 4096$ particles. Well over enough for our fixed amount $n = 64$.
-3. The `ncu` (Nsight Compute) results I addressed based on 256 worlds using a 2080 SUPER are:
+3. The `ncu` (Nsight Compute) results I addressed are:
    1. Uncoalesced Global Accesses (est. 57.67% speedup)
       1. 68% of total sectors were excessive, meaning for each chunk of data I globally requested, I was only using 32% of it.
       2. The bulk of this comes from 
@@ -75,14 +75,14 @@ Relevant specs for GPUs used in development - the 4090 is on a Linux server, whi
       2. I removed many of the local variables, reusing direct access to shared memory array access.
 4. `getAcceleration`
    1. Moved to `__inline__`, removed unnecessary allocations, and removed unused air resistance term.
-5. Total program time before convergence is a poor predictor of optimization, as it has a varying number of samples. Also, convergence was changed to be more accurate from the original test data. 
 
 ## Plots & Images
 
 ## Obstacles
 1. While official benchmarks were run on the GeForce RTX 4090, for development a local GPU(s) was used to debug and run against `ncu` to evaluate performance.
-   1. The hope of using ncu to isolate inefficiencies is that they will scale to the benchmarks on the full-fledged 4090 GPU or standard. 
-2. Somehow, linkage to critical CUDA files were lost or deleted on the Linux machine, including `/usr/local/cuda`. Much time was lost having to simply debugging and fixing compilation due to a standard library `std_function.h` function syntax.
+   1. This is a result of complications with using the VM without root/administrator privileges. After working with administrators of the machine, sufficient permissions to execute `ncu` were given, but then new errors came in trying to profile the GPU.
+   2. The hope of using ncu to isolate inefficiencies is that they will scale to the benchmarks on the full-fledged 4090 GPU or standard.
+2. Somehow, linkage to critical CUDA files was lost on the Linux machine, including `/usr/local/cuda`. There was a lot of files that had to be deleted. Much time was lost having to simply debugging and fixing compilation due to a standard library `std_function.h` function syntax.
    1. Relinked my path to account for the missing `/usr/local/cuda` directory by finding and relinking to an existing CUDA version on the machine.
    2. Added necessary lines to CMakeLists.txt to manually link to the correct version.
    3. The only cuda version I could find was cuda `11.x`, which `nvcc` has known issues compiling `g++-11`. The fix is to update to a cuda `12.x` version, which is what I was using before it vanished, or downgrade to `g++-10` which doesn't contain the `std_function.h` conflict. However, `g++-10` is also not on the system, and without root access I can't install it.
