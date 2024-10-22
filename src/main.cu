@@ -78,12 +78,9 @@ static void init() {
     Instead of iterating over each particle, we will make a kernel that runs for each particle
 */
 
-// Assume mass is 1; F / 1 = A
-__device__ glm::vec3 getAcceleration(int idx, const glm::vec4* v) {
-    float mass = 1.0f;
-
-    // Simple force composed of gravity and air resistance
-    glm::vec3 F_total = glm::vec3(0.0f, GRAVITY, 0.0f) - ((AIR_FRICTION / mass) * glm::vec3(v[idx])); 
+__device__ __inline__ glm::vec4 getAcceleration() {
+    // Simple force composed of gravity - you can add air resistance term (or others) and pass in velocity.
+    glm::vec4 F_total = glm::vec4(0.0f, GRAVITY, 0.0f, 0.0f);
 
     return F_total;
 }
@@ -93,89 +90,77 @@ __device__ glm::vec3 getAcceleration(int idx, const glm::vec4* v) {
     going to establish a simple distance constraint that is resolve with impulse / momentum.
 */
 
-static __device__ void solveConstraints(int idx, const glm::vec4* pos, const glm::vec4* vel, const float* radii,
-                                 glm::vec3& x_new, glm::vec3& v_new, float& dt, const glm::vec3& a,
+static __device__ void solveConstraints(int idx, const glm::vec4* s_pos, const glm::vec4* s_vel, const float* s_radii,
+                                 glm::vec4& x_new, glm::vec4& v_new, float& dt, const glm::vec4& a,
                                  int simulationIdx, int particleIdx, glm::vec3* s_dv, int& is_converged) {
-    // Truncate the w component
-    glm::vec3 x(pos[idx]), v(vel[idx]);
-    const float r_i = radii[idx];
+    // We could truncate
+    glm::vec4 x(s_pos[particleIdx]), v(s_vel[particleIdx]);
+    const float r_i = s_radii[particleIdx];
 
     // Particle-Particle Collisions //
     /*
         This could be below plane collisions, but seeing as we synchronized threads, we will do it here
 
-        This is the inner loop of for i in range(particles), for j in range(i + 1, particles)
+        Because of warp divergence, I have changed from an inner loop of j = particleIdx + 1, j < d_numParticles
+        to j = 0; j < d_numParticles. It is possible to do a pairwise logic, but ultimately warps will have to
+        wait no matter what, because the fewer collision checks one warp has to do.
 
-        We can grab the global array value as simulationIdx * particles + j. Note that because we
-        are handling j > i particles in the ith thread, the jth thread will never see i - so we should
-        update the opposite of the impulse from i -> j to the jth shared velocity; 
+        This code has been optimized to reduce local memory usage, so look at old commits for logic
     */
-    for (int j = particleIdx + 1; j < d_numParticles; j++) {
-        int idx_j = simulationIdx * d_numParticles + j;
 
-        glm::vec3 x_j(pos[idx_j]), v_j(vel[idx_j]);
-        float r_j = radii[idx_j];
+    for (int j = 0; j < d_numParticles; j++) {
+        if (particleIdx < j) {
+            int idx_j = simulationIdx * d_numParticles + j;
 
-        /*
-            If the distance from our particle to the other is less than radii[i] + radii[j] we have collided.
+            glm::vec4 x_ij = x - s_pos[j];
 
-            We can take the direction of j to x and say we (particle i) should be pushed in that direction.
+            // FIXME: Length calls like this can be dangerous if the w component isn't 0.0f
+            float d_ij = glm::length(x_ij);
 
-            The extent to which we move, or impulse, is dependent on the relative velocity, or how fast we
-            are moving towards each other. For example, if v_rel < 0, we are moving towards each other, and we
-            should push off more.
+            if (d_ij < r_i + s_radii[j]) {
+                glm::vec4 n_ij = glm::normalize(x_ij);
 
-            J = [(1 + e) * v_rel] / [1/m1 + 1/m2]
-        */
-        glm::vec3 x_ij = x - x_j;
-        float d_ij = glm::length(x_ij);
+                float impulse = (1 + RESTITUTION) * glm::dot(v - s_vel[j], n_ij) / (1 + 1);
 
-        if (d_ij < r_i + r_j) {
-            glm::vec3 n_ij = glm::normalize(x_ij);
-            glm::vec3 v_ij = v - v_j;
+                glm::vec4 impulse_vec = impulse * n_ij;
+                s_dv[particleIdx] += glm::vec3(impulse_vec);
 
-            float v_rel = glm::dot(v_ij, n_ij);
-            float impulse = (1 + RESTITUTION) * v_rel / (1 + 1);
-
-            glm::vec3 impulse_vec = impulse * n_ij;
-            s_dv[particleIdx] += impulse_vec;
-
-            // Consequently, we should change the velocities of j. This is not thread safe so we have to atomic
-            atomicAdd(&s_dv[j].x, -impulse_vec.x);
-            atomicAdd(&s_dv[j].y, -impulse_vec.y);
-            atomicAdd(&s_dv[j].z, -impulse_vec.z);
+                // Consequently, we should change the velocities of j. This is not thread safe so we have to atomic
+                atomicAdd(&s_dv[j].x, -impulse_vec.x);
+                atomicAdd(&s_dv[j].y, -impulse_vec.y);
+                atomicAdd(&s_dv[j].z, -impulse_vec.z);
+            }
         }
     }
 
-    // Synchronize threads, because we don't want to start plane collisions until this is done
+    // Synchronize threads and add impulse results - we have to do this before the plane collisions
     __syncthreads();
-    v += s_dv[particleIdx];
-    
-    // Plane Collisions //
+    v += glm::vec4(s_dv[particleIdx], 0.0f);
+
+    // Plane Collisions with x, v = glm::vec4 now //
     for (int i = 0; i < d_numPlanes; i++) {
-        const glm::vec3 p(d_planeP[i]), n(d_planeN[i]);
+        const glm::vec4 n(d_planeN[i]);
+        const glm::vec4 p_offset(d_planeP[i] + (r_i * n));
 
-        glm::vec3 new_p = p + (r_i * n);
+        float d_0 = glm::dot(x - p_offset, n);
+        float d_n = glm::dot(x_new - p_offset, n);
 
-        float d_0 = glm::dot(x - new_p, n);
-        float d_n = glm::dot(x_new - new_p, n);
-
-        glm::vec3 v_tan = v - (glm::dot(v, n) * n);
+        glm::vec4 v_tan = v - (glm::dot(v, n) * n);
         v_tan = (1 - FRICTION) * v_tan;
 
         if (d_n < FLOAT_EPS) {
             float f = d_0 / (d_0 - d_n);
             dt = f * dt;
 
-            glm::vec3 v_collision = (v + (dt * a)) * RESTITUTION;    
-            glm::vec3 x_collision = x;
+            glm::vec4 v_collision = (v + (dt * a)) * RESTITUTION;    
+            glm::vec4 x_collision = x;
 
             x_new = x_collision;
             v_new = (abs(glm::dot(v_collision, n)) * n) + (v_tan);
         }
 
         // Convergence or jitter check - (v = 0, "on" the plane, and acceleration towards plane)
-        if ((length(v_new) < STOP_VELOCITY) && (d_n < STOP_PLANE_DIST) && (dot(a, n) < FLOAT_EPS)) {
+        if ((length(v_new) < STOP_VELOCITY) && (d_n < 0.1f) && (dot(a, n) < FLOAT_EPS)) {
             v_new = glm::vec4(0.0f);
             is_converged = 1;
         } 
@@ -193,13 +178,25 @@ __global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int
 
     // FIXME: When a thread returns early, it cannot join __syncthreads later, so we should note this
     if (idx >= (d_numWorlds * d_numParticles)) {
-        printf("Returning idx = %d\n", idx);        
+        printf("[ERROR] Returning idx = %d\n", idx);        
         return;
     }
 
     // Allocate shared memory for graceful impulse & convergence handling; each block is one world so this works 
     __shared__ glm::vec3 s_dv[NUM_PARTICLES];
     __shared__ int s_converged;
+
+    // Shared memory for position, velocity, and radii to reduce repeated global access
+    __shared__ glm::vec4 s_pos[NUM_PARTICLES];
+    __shared__ glm::vec4 s_vel[NUM_PARTICLES];
+    __shared__ float s_radii[NUM_PARTICLES];
+
+    // Each thread should then load this, now we have much closer memory to our warp
+    s_pos[particleIdx] = pos[idx];
+    s_vel[particleIdx] = vel[idx];
+    s_radii[particleIdx] = radii[idx];
+
+    __syncthreads();
 
     // We only want to initialize it once
     if (particleIdx == 0) {
@@ -212,29 +209,26 @@ __global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int
     short max_iter = 10;
     int is_stopped = 0;
     
-    glm::vec3 x_cur(pos[idx]), v_cur(vel[idx]);
-    glm::vec3 x_new(x_cur), v_new(v_cur);
-
     while (max_iter && dt_remaining > FLOAT_EPS) {
         // Within the timestep multiple collisions are possible, so we will have to reuse the shared memory 
         s_dv[particleIdx] = glm::vec3(0.0f);
         
-        glm::vec3 a = getAcceleration(idx, vel);
+        glm::vec4 a = getAcceleration();
 
         // Integrate over timestep to update
-        x_new = x_cur + (dt * v_cur);
-        v_new = v_cur + (dt * a);
+        glm::vec4 x_new = s_pos[particleIdx] + (dt * s_vel[particleIdx]);
+        glm::vec4 v_new = s_vel[particleIdx] + (dt * a);
 
         // We have to synchronize before and after entering
         __syncthreads();
 
-        // Resolve particle-particle AND particle-plane position constraints
-        solveConstraints(idx, pos, vel, radii, x_new, v_new, dt, a, simulationIdx, particleIdx, s_dv, is_stopped);
+        // Resolve particle-particle AND particle-plane position constraints - should only use shared memory now
+        solveConstraints(idx, s_pos, s_vel, s_radii, x_new, v_new, dt, a, simulationIdx, particleIdx, s_dv, is_stopped);
 
         __syncthreads();
 
-        x_cur = x_new;
-        v_cur = v_new;
+        s_pos[particleIdx] = x_new;
+        s_vel[particleIdx] = v_new;
 
         dt_remaining -= dt;
         max_iter--;
@@ -248,9 +242,9 @@ __global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int
         convergeFlags[simulationIdx] = s_converged;
     }
     
-    // Before we potentially overwrote in the same simulateKernel call, we can reduce global access this way
-    pos[idx] = glm::vec4(x_new, 0.0f);
-    vel[idx] = glm::vec4(v_new, 0.0f);
+    // At the end update the global memory
+    pos[idx] = s_pos[particleIdx];
+    vel[idx] = s_vel[particleIdx];
 }
 
 void launchSimulations(std::ostream& output_buf, glm::vec4* pos_buf, vector<float>& h_worldConvergenceTimes) {
@@ -269,7 +263,7 @@ void launchSimulations(std::ostream& output_buf, glm::vec4* pos_buf, vector<floa
         int* c_flags = g_particles.d_convergenceFlags + (batch_offset);
 
         // If specified, we will output a specific world's position data over time for each particle
-        if ((g_curStep % 500 == 0) && g_worldLogIdx != -1 && g_worldLogIdx >= batch_offset && g_worldLogIdx < batch_offset + batch_sz) {
+        if ((g_curStep % 50 == 0) && g_worldLogIdx != -1 && g_worldLogIdx >= batch_offset && g_worldLogIdx < batch_offset + batch_sz) {
             int world_offset = (g_worldLogIdx - batch_offset) * g_numParticles;
             cudaMemcpy(pos_buf, pos + world_offset, g_numParticles * sizeof(glm::vec4), cudaMemcpyDeviceToHost);
 
@@ -325,7 +319,7 @@ void launchSimulations(std::ostream& output_buf, glm::vec4* pos_buf, vector<floa
 }
 
 int main(int argc, char**argv) {
-    if (argc < 2 || argc == 3) {
+    if (argc < 2) {
         cout << "Usage: ./executable <number of worlds/blocks> [world idx to log] [output file directory=../test/results/simdata] " << endl;
         return 0;
     }
@@ -338,9 +332,15 @@ int main(int argc, char**argv) {
 
     // Assuming world index AND output directory are given, then we will view 
     glm::vec4* pos_buf = nullptr;
-    if (argc == 4) {
+    if (argc >= 3) {
         g_worldLogIdx = std::stoi(argv[2]);
-        g_worldLogOutDir = string(argv[3]);
+        
+        if (argc == 3) {
+            g_worldLogOutDir = "../test/results/simdata/";
+        }
+        else {
+            g_worldLogOutDir = string(argv[3]);
+        }
         pos_buf = new glm::vec4[g_numParticles];
 
         if (g_worldLogIdx >= g_numWorlds) {
