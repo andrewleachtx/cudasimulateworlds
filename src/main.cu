@@ -160,7 +160,7 @@ static __device__ void solveConstraints(int idx, const glm::vec4* s_pos, const g
         }
 
         // Convergence or jitter check - (v = 0, "on" the plane, and acceleration towards plane)
-        if ((length(v_new) < STOP_VELOCITY) && (d_n < 0.1f) && (dot(a, n) < FLOAT_EPS)) {
+        if ((length(v_new) < STOP_VELOCITY) && (d_n < STOP_PLANE_DIST) && (dot(a, n) < FLOAT_EPS)) {
             v_new = glm::vec4(0.0f);
             is_converged = 1;
         } 

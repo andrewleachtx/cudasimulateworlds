@@ -12,7 +12,7 @@ for (( n=n_start; n<=n_end; n++ )); do
     world_counts+=( $((2**n)) )
 done
 
-echo "World counts to simulate: ${world_counts[@]}"
+echo "Simulating world counts: ${world_counts[@]}"
 
 timestamp_hash=$(date +%s)
 

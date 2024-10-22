@@ -56,7 +56,7 @@ Relevant specs for GPUs used in development - the 4090 is on a Linux server, whi
 2. The output file is formatted in a w
 
 ## Optimizations & New Features
-1. Moved to explicitly using `glm::vec4` with padding over `glm::vec3`. This is to use 16 bytes per call.
+1. Moved to explicitly using `glm::vec4` with padding over `glm::vec3`. This is to use 16 bytes per instance. Originally, casts to `glm::vec3` were made, but this seemed a bit redundant and made new allocations - refactored to just ignore the w term.
 2. Introduction of shared memory (`__shared__`) for storing per-block data on the GPU, making extremely fast access at the cost of space.
    1. Simulation "convergence" is decided by the `&&` of all each particle's $\vec{v} = 0$. This would normally be a race condition, but we can use `atomicAnd` to get all of them at once efficiently and safely.
    2. To gracefully handle particle collisions, we can store $\Delta \vec{v_{ki}}\left[n\right]$, and as $n$ is constant, we can do this at compile time (otherwise we could use `extern __shared__ glm::vec3 s_dv[]` and update device properties).
@@ -70,15 +70,12 @@ Relevant specs for GPUs used in development - the 4090 is on a Linux server, whi
    3. Warp Divergence and Stalling
       1. It is clear from the **Warp State Statistics** tab that many of my warps are stalling, which I believe to be caused by a wait after synchronization, as well as control flow altering warp control flow.
       2. Restructured nested loop in `solveConstraints` from an inner loop of `j = particleIdx + 1, j < d_numParticles` to `j = 0; j < d_numParticles` with an `if (particleIdx < j)` condition. Ultimately there will always be stalls due to the usage of shared memory as well as the `atomic` calls.
-   1. High Local Memory Utilization
+   4. High Local Memory Utilization
       1. Register spills result in memory being sent to global from a warp, and I used quite a few helper variables that on a more massive scale actually resulted in 74.96% local memory usage, which is not good.
       2. I removed many of the local variables, reusing direct access to shared memory array access.
-1. Truncation of the fourth `w` component in `vec4` was originally done by effectively reconstructing into `glm::vec3`, but this seemed a bit redundant and made new allocations - refactored to just ignore the term, while still using `glm::vec4`.
-2. `getAcceleration`
-   1. Moved to `__inline__`, removed unnecessary allocations, and removed unused air resistance term
-
-
- 
+4. `getAcceleration`
+   1. Moved to `__inline__`, removed unnecessary allocations, and removed unused air resistance term.
+5. Total program time before convergence is a poor predictor of optimization, as it has a varying number of samples. Also, convergence was changed to be more accurate from the original test data. 
 
 ## Plots & Images
 
