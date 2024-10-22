@@ -3,6 +3,7 @@ import re
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
+from matplotlib import ticker
 
 # Set seaborn style
 sns.set()
@@ -100,41 +101,61 @@ post_data = pd.DataFrame({
     "avg_simulate_kernel_times": post_avg_simulate_kernel_times
 }).sort_values("num_worlds")
 
-# Plotting convergence times with log scale
+# x_labels = [f"$2^{{{n}}}$" for n in range((worlds_list))]
+num_worlds = len(pre_data["num_worlds"])
+unique_worlds = sorted(set(pre_data["num_worlds"]).union(set(post_data["num_worlds"])))
+
+x_ticks = unique_worlds
+x_labels = [f"$2^{{{n}}}$" for n in range(0, 24)]
+
+# Define colors for the lines
+min_color = 'blue'
+avg_color = 'orange'
+max_color = 'green'
+
+# Plot 1 (log conv time x # Worlds)
 plt.figure(figsize=(10, 6))
 
-# Pre-optimization data
-plt.plot(pre_data["num_worlds"], pre_data["min_times"], "o-", label="Pre Optimization Min Time")
-plt.plot(pre_data["num_worlds"], pre_data["avg_times"], "o-", label="Pre Optimization Avg Time")
-plt.plot(pre_data["num_worlds"], pre_data["max_times"], "o-", label="Pre Optimization Max Time")
+# Pre-optimization data (solid lines)
+plt.plot(pre_data["num_worlds"], pre_data["min_times"], "o-", label="Min Time (pre-optimization)", color=min_color)
+plt.plot(pre_data["num_worlds"], pre_data["avg_times"], "o-", label="Avg Time (pre-optimization)", color=avg_color)
+plt.plot(pre_data["num_worlds"], pre_data["max_times"], "o-", label="Max Time (pre-optimization)", color=max_color)
 
-# Post-optimization data
-plt.plot(post_data["num_worlds"], post_data["min_times"], "x--", label="Post Optimization Min Time")
-plt.plot(post_data["num_worlds"], post_data["avg_times"], "x--", label="Post Optimization Avg Time")
-plt.plot(post_data["num_worlds"], post_data["max_times"], "x--", label="Post Optimization Max Time")
+# Post-optimization data (dashed lines, same colors)
+plt.plot(post_data["num_worlds"], post_data["min_times"], "^--", label="Min Time (post-optimization)", color=min_color)
+plt.plot(post_data["num_worlds"], post_data["avg_times"], "^--", label="Avg Time (post-optimization)", color=avg_color)
+plt.plot(post_data["num_worlds"], post_data["max_times"], "^--", label="Max Time (post-optimization)", color=max_color)
 
-plt.xlabel("Number of Worlds")
+# plt.xlabel("Number of Worlds")
+plt.xlabel(r"$log_2(\mathrm{Number of Worlds})$")
 plt.ylabel("Time (ms)")
 plt.title("Convergence Times vs Number of Worlds")
+plt.xscale("log", base=2)
+plt.xticks(x_ticks, x_labels)
 plt.legend()
+
+plt.gca().yaxis.set_major_formatter(ticker.FormatStrFormatter('%.0e'))
+
 plt.grid(True)
-plt.yscale("log")  # Apply log scale to y-axis
+plt.savefig("../docs/figures/convergence_times_vs_worldsLOG.png")
 plt.show()
 
-# Plotting average times without log scale
+# Plot 2 (avg times v # worlds)
 plt.figure(figsize=(10, 6))
 
-# Pre-optimization data
-plt.plot(pre_data["num_worlds"], pre_data["avg_batch_loop_times"], "o-", label="Pre Optimization Avg Batch Loop Time")
-plt.plot(pre_data["num_worlds"], pre_data["avg_simulate_kernel_times"], "o-", label="Pre Optimization Avg simulateKernel() Time")
+# Pre-optimization data (solid lines)
+plt.plot(pre_data["num_worlds"], pre_data["avg_batch_loop_times"], "o-", label="Avg Batch Loop Time (pre-optimization)")
+plt.plot(pre_data["num_worlds"], pre_data["avg_simulate_kernel_times"], "o-", label="Avg simulateKernel() Time (pre-optimization)")
 
-# Post-optimization data
-plt.plot(post_data["num_worlds"], post_data["avg_batch_loop_times"], "x--", label="Post Optimization Avg Batch Loop Time")
-plt.plot(post_data["num_worlds"], post_data["avg_simulate_kernel_times"], "x--", label="Post Optimization Avg simulateKernel() Time")
+# Post-optimization data (dashed lines, same colors)
+plt.plot(post_data["num_worlds"], post_data["avg_batch_loop_times"], "^--", label="Avg Batch Loop Time (post-optimization)")
+plt.plot(post_data["num_worlds"], post_data["avg_simulate_kernel_times"], "^--", label="Avg simulateKernel() Time (post-optimization)")
 
 plt.xlabel("Number of Worlds")
+plt.xticks(x_ticks, x_labels)
 plt.ylabel("Time (ms)")
 plt.title("Average Times vs Number of Worlds")
 plt.legend()
 plt.grid(True)
+plt.savefig("../docs/figures/avg_times_vs_worlds.png")
 plt.show()

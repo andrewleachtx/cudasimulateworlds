@@ -77,6 +77,11 @@ Relevant specs for GPUs used in development - the 4090 is on a Linux server, whi
    1. Moved to `__inline__`, removed unnecessary allocations, and removed unused air resistance term.
 
 ## Plots & Images
+![Avg Times v Worlds](./figures/avg_times_vs_worlds.png)
+![Avg Times v (log2) Worlds](./figures/avg_times_vs_worldsLOG.png)
+![Conv Times v Worlds](./figures/convergence_times_vs_worlds.png)
+![Conv Times (log2) v Worlds](./figures/convergence_times_vs_worldsLOG.png)
+![Total Program Times v Worlds](./figures/totaltimes_vs_worlds.png)
 
 ## Obstacles
 1. While official benchmarks were run on the GeForce RTX 4090, for development a local GPU(s) was used to debug and run against `ncu` to evaluate performance.
