@@ -196,8 +196,6 @@ __global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int
     s_vel[particleIdx] = vel[idx];
     s_radii[particleIdx] = radii[idx];
 
-    __syncthreads();
-
     // We only want to initialize it once
     if (particleIdx == 0) {
         s_converged = 1;
@@ -263,7 +261,7 @@ void launchSimulations(std::ostream& output_buf, glm::vec4* pos_buf, vector<floa
         int* c_flags = g_particles.d_convergenceFlags + (batch_offset);
 
         // If specified, we will output a specific world's position data over time for each particle
-        if ((g_curStep % 50 == 0) && g_worldLogIdx != -1 && g_worldLogIdx >= batch_offset && g_worldLogIdx < batch_offset + batch_sz) {
+        if ((g_curStep % WORLD_LOG_STEPSIZE == 0) && g_worldLogIdx != -1 && g_worldLogIdx >= batch_offset && g_worldLogIdx < batch_offset + batch_sz) {
             int world_offset = (g_worldLogIdx - batch_offset) * g_numParticles;
             cudaMemcpy(pos_buf, pos + world_offset, g_numParticles * sizeof(glm::vec4), cudaMemcpyDeviceToHost);
 

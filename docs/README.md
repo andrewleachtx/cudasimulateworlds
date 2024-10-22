@@ -69,13 +69,12 @@ Relevant specs for GPUs used in development - the 4090 is on a Linux server, whi
       1. Added shared memory for position, velocity, and radii to simulateKernel to reduce repeated global access in the `solveConstraints` and its nested loop. This also improved `getAcceleration` negligibly. Additionally this reduced some register usage as I could reuse shared memory instead of making temporary variables.
    3. Warp Divergence and Stalling
       1. It is clear from the **Warp State Statistics** tab that many of my warps are stalling, which I believe to be caused by a wait after synchronization, as well as control flow altering warp control flow.
-      2. Restructured nested loop in `solveConstraints` from an inner loop of `j = particleIdx + 1, j < d_numParticles`
-        to `j = 0; j < d_numParticles` with an `if (particleIdx < j)` condition.
-   4. High Local Memory Utilization
+      2. Restructured nested loop in `solveConstraints` from an inner loop of `j = particleIdx + 1, j < d_numParticles` to `j = 0; j < d_numParticles` with an `if (particleIdx < j)` condition. Ultimately there will always be stalls due to the usage of shared memory as well as the `atomic` calls.
+   1. High Local Memory Utilization
       1. Register spills result in memory being sent to global from a warp, and I used quite a few helper variables that on a more massive scale actually resulted in 74.96% local memory usage, which is not good.
       2. I removed many of the local variables, reusing direct access to shared memory array access.
-4. Truncation of the fourth `w` component in `vec4` was originally done by effectively reconstructing into `glm::vec3`, but this seemed a bit redundant and made new allocations - refactored to just ignore the term, while still using `glm::vec4`.
-5. `getAcceleration`
+1. Truncation of the fourth `w` component in `vec4` was originally done by effectively reconstructing into `glm::vec3`, but this seemed a bit redundant and made new allocations - refactored to just ignore the term, while still using `glm::vec4`.
+2. `getAcceleration`
    1. Moved to `__inline__`, removed unnecessary allocations, and removed unused air resistance term
 
 
