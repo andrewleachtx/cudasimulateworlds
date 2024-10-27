@@ -2,9 +2,9 @@
 
 # This is all based on the assumption you execute from test/
 
-# We want values from 2^0 to 2^23, as 2^24 will not compile
+# We only care up to 16384 or 1 << 14 as after is a hardware limit, so
 n_start=0
-n_end=23
+n_end=14
 
 # Generate array of world counts: world_counts=(2^n_start, 2^(n_start+1), ..., 2^n_end)
 world_counts=()

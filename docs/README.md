@@ -36,9 +36,11 @@ Relevant specs for GPUs used in development - the 4090 is on a Linux server, whi
 ## Notes
 1. Benchmarks were run on a **NVIDIA GeForce RTX 4090** with **CUDA 12.2**. For better access to the hardware and profiling, a RTX 2080 SUPER was used locally to debug and run against `ncu` to evaluate performance.
    1. The hope of using ncu to isolate inefficiencies is that they will scale to the benchmarks on the full-fledged 4090 GPU or standard.
-2. Each simulation "converges" when their last particle velocity reaches $\approx 0$. For the $ith$ world or simulation, this occurs when the "dead particle" counter reaches the size $n_i$ of that simulation.
+2. Each simulation has kernel execution timing averaged over a maximum of 10000 or `MAX_STEPS` steps.
 3. `test/...` is where many of the .sh scripts were made to iterate over various particle sizes and thread counts.
-   1. The files are labeled in `cout/{particle ct}/`.
+   1. `stdout` is saved to `test/results/stdout/out_{world}.txt/`.
+   2. Simulation data (if toggled) in `test/results/simdata/{world}_{minute}_{second}`.
+      1. System time of `minute` and `second` the script was run.
 4. GPU Memory:
    1. Global
       1. $kn$ particles are allocated into global memory. Each particle has a unique position $\vec{x_i}$, velocity $\vec{v_i}$ and radius $r_i$, which are stored as `vec4` and `float`, respectively. $$2 * sizeof(vec4) + sizeof(float) = 36 \text{ bytes per particle}$$ $$\implies kn \leq \frac{\text{max bytes}}{\text{sizeof(particle)}} = \frac{25282281472 \text{ bytes}}{36 \text{ bytes}} \approx 702,285,596$$ this is relevant because it means with $n = 64$, we can maximally allocate $\frac{702,285,596}{64} \approx 10973212$ **worlds.** Of course, this value is decreased greatly as not all of the theoretical maximum VRAM is usable for us. If you wanted to exceed this, you could invite CPU fallback memory with **unified memory** at the cost of performance - but this is not enabled for us.
@@ -58,7 +60,7 @@ Relevant specs for GPUs used in development - the 4090 is on a Linux server, whi
 ## Optimizations & New Features
 1. Moved to explicitly using `glm::vec4` with padding over `glm::vec3`. This is to use 16 bytes per instance. Originally, casts to `glm::vec3` were made, but this seemed a bit redundant and made new allocations - refactored to just ignore the w term.
 2. Introduction of shared memory (`__shared__`) for storing per-block data on the GPU, making extremely fast access at the cost of space.
-   1. Simulation "convergence" is decided by the `&&` of all each particle's $\vec{v} = 0$. This would normally be a race condition, but we can use `atomicAnd` to get all of them at once efficiently and safely.
+   1. Simulation "convergence" was once decided by the `&&` of all each particle's $\vec{v} = 0$. This would normally be a race condition, but we can use `atomicAnd` to get all of them at once efficiently and safely.
    2. To gracefully handle particle collisions, we can store $\Delta \vec{v_{ki}}\left[n\right]$, and as $n$ is constant, we can do this at compile time (otherwise we could use `extern __shared__ glm::vec3 s_dv[]` and update device properties).
    3. We have `deviceProp.sharedMemPerBlockbytes` of shared memory available to us per block - because this is such a small region (48 KB on 4090) we are using a `vec3` regardless of padding / time concerns. Then we have $\frac{\text{shared memory}}{sizeof(vec3)}$ particles at a max. Assuming 48 KB, that would be $\frac{48 * 2^{10}}{12} = 4096$ particles. Well over enough for our fixed amount $n = 64$.
 3. The `ncu` (Nsight Compute) results I addressed are:

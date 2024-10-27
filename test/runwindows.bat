@@ -5,7 +5,7 @@ REM This script is based on the assumption you execute it from the 'test' direct
 
 REM Default exponent range
 set n_start=0
-set n_end=16
+set n_end=14
 
 REM Create a timestamp to uniquely identify output files (optional)
 REM For simplicity, we will skip timestamp_hash in this script

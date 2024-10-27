@@ -20,8 +20,6 @@ std::ofstream g_worldLogStream;
 
 static const size_t g_numParticles = NUM_PARTICLES;
 static size_t g_numWorlds, g_maxBlocks;
-static int* h_convergenceFlags;
-static bool g_isGlobalConverged(false);
 std::chrono::high_resolution_clock::time_point g_progStart;
 float g_curStepTime(0.0f);
 long long g_curStep(0);
@@ -40,7 +38,7 @@ dim3 g_threadsPerBlock;
 
 // static const int g_timeSampleSz = KERNEL_TIMING_SAMPLESZ;
 static size_t g_timeSampleCt = 0;
-static float g_totalKernelTime(0.0f), g_totalBatchLoopTime(0.0f);
+static float g_totalKernelTime(0.0f);
 
 ParticleData g_particles;
 PlaneData g_planes;
@@ -67,11 +65,6 @@ static void init() {
 
         // numWorlds
         gpuErrchk(cudaMemcpyToSymbol(d_numWorlds, &g_numWorlds, sizeof(size_t)));
-
-        // We should zero h_convergenceFlags here and send that to CUDA
-        h_convergenceFlags = new int[k];
-        memset(h_convergenceFlags, 0, k * sizeof(int));
-        cudaMemcpy(g_particles.d_convergenceFlags, h_convergenceFlags, k * sizeof(int), cudaMemcpyHostToDevice);
 }
 
 /*
@@ -92,7 +85,7 @@ __device__ __inline__ glm::vec4 getAcceleration() {
 
 static __device__ void solveConstraints(int idx, const glm::vec4* s_pos, const glm::vec4* s_vel, const float* s_radii,
                                  glm::vec4& x_new, glm::vec4& v_new, float& dt, const glm::vec4& a,
-                                 int simulationIdx, int particleIdx, glm::vec3* s_dv, int& is_converged) {
+                                 int simulationIdx, int particleIdx, glm::vec3* s_dv) {
     // We could truncate
     glm::vec4 x(s_pos[particleIdx]), v(s_vel[particleIdx]);
     const float r_i = s_radii[particleIdx];
@@ -162,15 +155,14 @@ static __device__ void solveConstraints(int idx, const glm::vec4* s_pos, const g
         // Convergence or jitter check - (v = 0, "on" the plane, and acceleration towards plane)
         if ((length(v_new) < STOP_VELOCITY) && (d_n < STOP_PLANE_DIST) && (dot(a, n) < FLOAT_EPS)) {
             v_new = glm::vec4(0.0f);
-            is_converged = 1;
-        } 
+        }
     }
 }
 
 /*
     We are now working with global arrays of great size; 
 */
-__global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int* convergeFlags) {
+__global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii) {
     unsigned int simulationIdx(blockIdx.x), particleIdx(threadIdx.x);
 
     // Overflow shouldn't be possible
@@ -184,7 +176,6 @@ __global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int
 
     // Allocate shared memory for graceful impulse & convergence handling; each block is one world so this works 
     __shared__ glm::vec3 s_dv[NUM_PARTICLES];
-    __shared__ int s_converged;
 
     // Shared memory for position, velocity, and radii to reduce repeated global access
     __shared__ glm::vec4 s_pos[NUM_PARTICLES];
@@ -195,11 +186,6 @@ __global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int
     s_pos[particleIdx] = pos[idx];
     s_vel[particleIdx] = vel[idx];
     s_radii[particleIdx] = radii[idx];
-
-    // We only want to initialize it once
-    if (particleIdx == 0) {
-        s_converged = 1;
-    }
 
     // Handle fractional timesteps
     float dt_remaining = DT_SIMULATION;
@@ -221,7 +207,7 @@ __global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int
         __syncthreads();
 
         // Resolve particle-particle AND particle-plane position constraints - should only use shared memory now
-        solveConstraints(idx, s_pos, s_vel, s_radii, x_new, v_new, dt, a, simulationIdx, particleIdx, s_dv, is_stopped);
+        solveConstraints(idx, s_pos, s_vel, s_radii, x_new, v_new, dt, a, simulationIdx, particleIdx, s_dv);
 
         __syncthreads();
 
@@ -232,20 +218,12 @@ __global__ void simulateKernel(glm::vec4* pos, glm::vec4* vel, float* radii, int
         max_iter--;
     }
 
-    // The and of all 64 particles being stopped in this world being 1 represents full convergence
-    atomicAnd(&s_converged, is_stopped);
-
-    // No need for atomic here, only the first thread will update the flag
-    if (particleIdx == 0) {
-        convergeFlags[simulationIdx] = s_converged;
-    }
-    
     // At the end update the global memory
     pos[idx] = s_pos[particleIdx];
     vel[idx] = s_vel[particleIdx];
 }
 
-void launchSimulations(std::ostream& output_buf, glm::vec4* pos_buf, vector<float>& h_worldConvergenceTimes) {
+void launchSimulations(std::ostream& output_buf, glm::vec4* pos_buf) {
     size_t maxBlocks(g_maxBlocks), numWorlds(g_numWorlds);
     int batch_ct = (numWorlds + maxBlocks - 1) / maxBlocks;
 
@@ -258,7 +236,6 @@ void launchSimulations(std::ostream& output_buf, glm::vec4* pos_buf, vector<floa
         glm::vec4* pos = g_particles.d_position + (batch_offset * g_numParticles);
         glm::vec4* vel = g_particles.d_velocity + (batch_offset * g_numParticles);
         float* radii = g_particles.d_radii + (batch_offset * g_numParticles);
-        int* c_flags = g_particles.d_convergenceFlags + (batch_offset);
 
         // If specified, we will output a specific world's position data over time for each particle
         if ((g_curStep % WORLD_LOG_STEPSIZE == 0) && g_worldLogIdx != -1 && g_worldLogIdx >= batch_offset && g_worldLogIdx < batch_offset + batch_sz) {
@@ -274,7 +251,7 @@ void launchSimulations(std::ostream& output_buf, glm::vec4* pos_buf, vector<floa
         // Launch kernel, static size shared memory should be 64 * sizeof(glm::vec3) ~ 700 bytes per block should be ok
         // https://developer.nvidia.com/blog/using-shared-memory-cuda-cc/#static_shared_memory
         gpuErrchk(cudaEventRecord(cudaEvt_simStart));
-        simulateKernel<<<batch_sz, g_threadsPerBlock>>>(pos, vel, radii, c_flags);
+        simulateKernel<<<batch_sz, g_threadsPerBlock>>>(pos, vel, radii);
         gpuErrchk(cudaEventRecord(cudaEvt_simStop));
         gpuErrchk(cudaEventSynchronize(cudaEvt_simStop));
 
@@ -284,33 +261,11 @@ void launchSimulations(std::ostream& output_buf, glm::vec4* pos_buf, vector<floa
     }
     auto t_batchLoopStop = std::chrono::high_resolution_clock::now();
 
-    // Global Convergence //
-    bool is_globalConverged = true;
-    cudaMemcpy(h_convergenceFlags, g_particles.d_convergenceFlags, numWorlds * sizeof(int), cudaMemcpyDeviceToHost);
-    for (int i = 0; i < numWorlds; i++) {
-        is_globalConverged = is_globalConverged && h_convergenceFlags[i];
-        
-        if (BENCHMARK && h_convergenceFlags[i] && h_worldConvergenceTimes[i] < 0.0f) {
-            auto conv_time = std::chrono::high_resolution_clock::now() - g_progStart;
-            float conv_time_ms = std::chrono::duration<float, std::milli>(conv_time).count();
-            
-            h_worldConvergenceTimes[i] = conv_time_ms;
-        }
-    }
-
-    // Could just set it equal, but this way we avoid global access :)
-    if (is_globalConverged) {
-        g_isGlobalConverged = true;
-    }
-
     // Benchmarking //
     if (BENCHMARK) {
         float t_kernel;
         cudaEventElapsedTime(&t_kernel, cudaEvt_simStart, cudaEvt_simStop);
         g_totalKernelTime += t_kernel;
-
-        float t_batchLoopTime = std::chrono::duration<float, std::milli>(t_batchLoopStop - t_batchLoopStart).count();
-        g_totalBatchLoopTime += t_batchLoopTime;
 
         g_timeSampleCt++;
     }
@@ -389,15 +344,14 @@ int main(int argc, char**argv) {
     g_progStart = std::chrono::high_resolution_clock::now();
     auto end = g_progStart + std::chrono::seconds(MAX_SIMULATE_TIME_SECONDS);
 
-    vector<float> h_worldConvergenceTimes(g_numWorlds, -1.0f);
-    while (!g_isGlobalConverged && (std::chrono::high_resolution_clock::now() < end)) {
-        launchSimulations(g_worldLogStream, pos_buf, h_worldConvergenceTimes);
+    while (g_curStep < MAX_STEPS && std::chrono::high_resolution_clock::now() < end) {
+        launchSimulations(g_worldLogStream, pos_buf);
         
         g_curStep++;
         g_curStepTime = g_curStep * DT_SIMULATION;
     }
     
-    // Convergence time
+    // Full convergence time
     auto conv_time = std::chrono::high_resolution_clock::now() - g_progStart;
     auto conv_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(conv_time).count();
     printf("[BENCHMARK] Actual program time: %ld ms\n", conv_time_ms);
@@ -412,31 +366,11 @@ int main(int argc, char**argv) {
         printf("[BENCHMARK] Average individual simulateKernel() time over %d samples: %f ms\n", g_timeSampleCt, avg);
         printf("[BENCHMARK] Total time spent in kernel before global convergence: %f ms\n", overall);
         printf("[BENCHMARK] Kernel time / total program time: %f\n", usage);
-        printf("[BENCHMARK] ----------------------------------\n");
-        printf("[BENCHMARK] Total time sending and executing batches of simulateKernel(): %f ms\n", g_totalBatchLoopTime);
-        printf("[BENCHMARK] Average time per batch loop: %f ms\n", g_totalBatchLoopTime / g_timeSampleCt);
-
-        float minConvTime(std::numeric_limits<float>::max()), maxConvTime(0.0f), avgConvTime(0.0f);
-        for (int i = 0; i < g_numWorlds; i++) {
-            if (h_worldConvergenceTimes[i] < minConvTime) {
-                minConvTime = h_worldConvergenceTimes[i];
-            }
-
-            if (h_worldConvergenceTimes[i] > maxConvTime) {
-                maxConvTime = h_worldConvergenceTimes[i];
-            }
-
-            avgConvTime += h_worldConvergenceTimes[i];
-        }
-        
-        avgConvTime /= g_numWorlds;
-        printf("[BENCHMARK] (Local) Min convergence time: %f ms, Max convergence time: %f ms, Avg convergence time: %f ms\n", minConvTime, maxConvTime, avgConvTime);
     }
 
     // Cleanup //
     cudaEventDestroy(cudaEvt_simStart);
     cudaEventDestroy(cudaEvt_simStop);
-    delete[] h_convergenceFlags;
     delete[] pos_buf;
     if (g_worldLogIdx != -1) {
         g_worldLogStream.close();
