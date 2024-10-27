@@ -361,7 +361,7 @@ int main(int argc, char**argv) {
         float overall = g_totalKernelTime;
         float avg = g_totalKernelTime / g_timeSampleCt;
         float usage = g_totalKernelTime / (conv_time_ms);
-
+        
         printf("[BENCHMARK] threadsPerBlock=particlesPerWorld: %d, blocksPerGrid=numWorlds: %d\n", g_threadsPerBlock.x, g_blocksPerGrid.x);
         printf("[BENCHMARK] Average individual simulateKernel() time over %d samples: %f ms\n", g_timeSampleCt, avg);
         printf("[BENCHMARK] Total time spent in kernel before global convergence: %f ms\n", overall);

@@ -94,3 +94,28 @@ Relevant specs for GPUs used in development - the 4090 is on a Linux server, whi
    2. Added necessary lines to CMakeLists.txt to manually link to the correct version.
    3. The only cuda version I could find was cuda `11.x`, which `nvcc` has known issues compiling `g++-11`. The fix is to update to a cuda `12.x` version, which is what I was using before it vanished, or downgrade to `g++-10` which doesn't contain the `std_function.h` conflict. However, `g++-10` is also not on the system, and without root access I can't install it.
    4. To avoid losing further time awaiting administrator permissions, I locally installed the [CUDA 12.6 Toolkit](https://developer.nvidia.com/cuda-downloads?target_os=Linux&target_arch=x86_64&Distribution=Ubuntu&target_version=22.04&target_type=runfile_local) to my home (~) directory, and linked it there. There are still some failed linkages when building, i.e. `nvlink warning : Skipping incompatible '/lib/x86_64-linux-gnu/librt.a' when searching for -lrt` because the resource is gone, but they are not necessary.
+
+## Conclusions
+1. After about $2^12$ world, you can observe a constant to linear change in average `simulateKernel` time. It was believed that this was due to a hardware limit - if there are `16384` CUDA cores, and we simulate a world per core, we can only achieve parallelization up to `16384` worlds, right?
+   1. This was wrong. While there are 16384 CUDA cores, my graph of GPU information is **misleading** in that the GPU does not execute cores on an individual level like this.
+   2. The streaming multiprocessors on a 4090 handle about 32 blocks simultaneously, with 128 SMs. This means we have a maximum around $128 \text{SMs} * 32 \text{blocks per SM} = 4096$ blocks available to be parallelized, which explains our $2^12$ inflection point.
+2. The design of this simulation is inherently flawed.
+   1. From the start, the simulation was designed for 1 block per world with `k` worlds with a fixed $n=64$ particles per block. This simplified things, and made intuitive sense; one `simulateKernel` instance was called for each world, and each one had `64` particles or threads.
+   2. This is problematic because our block can store `1024` threads or particles, and I only used `64`. I think this quick sketch helps: ![GPU Hierarchy](gpu_hierarchy.png)
+   3. As you can see, I am only utilizing $2 / 32 = 6.25%$ of warps available per block. Warps execute in rapid series per block - what does this mean for us?
+      1. Occupancy (ratio of active to available warps) drops massively, and so does latency hiding.
+         1. When one of the worlds (2 warps) idles, we do not have other warps available to be swapped in to "hide" the latency of waiting.
+      2. Even if we increase the number of worlds per block, at the same world count as before, wouldn't this only slow us down as there are technically 32 warps or 16 worlds executing in rapid series?
+         1. Think of increasing warps as increasing the amount of warps the SM can work with to continuously have something to work with; it is a good thing.
+         2. Don't forget by doing this you greatly reduce the number of blocks, and that can 1) reduce scheduling and joining overhead, 2) better use shared memory / registers, etc... 
+
+## Future Improvements
+1. Formatted stdout + Python parsing as a system for outputting, retrieving, and analyzing benchmark data could be vastly improved if not changed.
+   1. For example, printing "`[BENCHMARK] Average individual simulateKernel() time over 6609 samples: 0.027232 ms`" and could be rewritten more concisely to ease regex for text parsing to retrieve what I need.
+   2. Use `csv` for more standard data intake w/ Python?
+2. These `README` files are too long.
+   1. Specifically allocating time a **day** after writing them to trim fat would be helpful.
+3. The plots are a black box and hectic to generate - `matplotlib` is used.
+   1. Create a general template or plot style?
+4. There needs to be a way to output the `README.md` as a pdf, as currently doing so works, but breaks `LaTeX` which I love using for math too much to remove.
+5. While world output logging exists, it is unknown how to read it somewhere.

@@ -2,7 +2,8 @@
 
 # This is all based on the assumption you execute from test/
 
-# We only care up to 16384 or 1 << 14 as after is a hardware limit, so
+# We can only execute 128 SMs * 32 Blocks Per SM = 4096 blocks before series execution, so 4096 is our hardware limit
+# include up to 1 << 14 or 16384 to show the effects of losing parallelization
 n_start=0
 n_end=14
 
