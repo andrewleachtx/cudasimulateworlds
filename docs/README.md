@@ -21,7 +21,8 @@ Simulation states are not rendered; you can output position data for the $ith$ w
 - `"...\NVIDIA GPU Computing Toolkit\CUDA\v12.6\extras\demo_suite\deviceQuery"` (or wherever it is located) provides fine-grained information and details about the GPU and its processing power.
 
 ## GPU Specifications
-Relevant specs for GPUs used in development - the 4090 is on a Linux server, while the A2000 and 2080 SUPER were used locally. Device information was queried with `deviceQuery`
+Relevant specs for GPUs used in development - the 4090 is on a Linux server, while the A2000 and 2080 SUPER were used locally. Device information was queried with `deviceQuery`.
+
 | Query                       | NVIDIA GeForce RTX 4090          | NVIDIA RTX A2000 Laptop GPU       |
 |-----------------------------|----------------------------------|-----------------------------------|
 | **CUDA Driver Version**     | 12.6                             | 12.6                              |
@@ -96,12 +97,12 @@ Relevant specs for GPUs used in development - the 4090 is on a Linux server, whi
    4. To avoid losing further time awaiting administrator permissions, I locally installed the [CUDA 12.6 Toolkit](https://developer.nvidia.com/cuda-downloads?target_os=Linux&target_arch=x86_64&Distribution=Ubuntu&target_version=22.04&target_type=runfile_local) to my home (~) directory, and linked it there. There are still some failed linkages when building, i.e. `nvlink warning : Skipping incompatible '/lib/x86_64-linux-gnu/librt.a' when searching for -lrt` because the resource is gone, but they are not necessary.
 
 ## Conclusions
-1. After about $2^12$ world, you can observe a constant to linear change in average `simulateKernel` time. It was believed that this was due to a hardware limit - if there are `16384` CUDA cores, and we simulate a world per core, we can only achieve parallelization up to `16384` worlds, right?
+1. After about $2^{12}$ worlds, you can observe a constant to linear change in average `simulateKernel` time. It was believed that this was due to a hardware limit - if there are `16384` CUDA cores, and we simulate a world per core, we can only achieve parallelization up to `16384` worlds, right?
    1. This was wrong. While there are 16384 CUDA cores, my graph of GPU information is **misleading** in that the GPU does not execute cores on an individual level like this.
-   2. The streaming multiprocessors on a 4090 handle about 32 blocks simultaneously, with 128 SMs. This means we have a maximum around $128 \text{SMs} * 32 \text{blocks per SM} = 4096$ blocks available to be parallelized, which explains our $2^12$ inflection point.
+   2. The streaming multiprocessors on a 4090 handle about 32 blocks simultaneously, with 128 SMs. This means we have a maximum around $128 \text{SMs} * 32 \text{blocks per SM} = 4096$ blocks available to be parallelized, which explains our $2^{12}$ inflection point.
 2. The design of this simulation is inherently flawed.
    1. From the start, the simulation was designed for 1 block per world with `k` worlds with a fixed $n=64$ particles per block. This simplified things, and made intuitive sense; one `simulateKernel` instance was called for each world, and each one had `64` particles or threads.
-   2. This is problematic because our block can store `1024` threads or particles, and I only used `64`. I think this quick sketch helps: ![GPU Hierarchy](gpu_hierarchy.png)
+   2. This is problematic because our block can store `1024` threads or particles, and I only used `64`. I think this quick sketch helps: <p align="center"><img src="./figures/gpu_hierarchy.png" width=60% /></p>
    3. As you can see, I am only utilizing $2 / 32 = 6.25%$ of warps available per block. Warps execute in rapid series per block - what does this mean for us?
       1. Occupancy (ratio of active to available warps) drops massively, and so does latency hiding.
          1. When one of the worlds (2 warps) idles, we do not have other warps available to be swapped in to "hide" the latency of waiting.
