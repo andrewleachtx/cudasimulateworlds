@@ -34,7 +34,8 @@ for filename in stdout_files:
         for key, pattern in patterns.items():
             match = re.search(pattern, partition)
             if match:
-                data[partitions[i]][key].append(match.groups())
+                values = [float(x) if '.' in x else int(x) for x in match.groups()]
+                data[partitions[i]][key].append(values)
 
 df = pd.DataFrame(data)
 print(df.head())

@@ -3,6 +3,20 @@ The goal of this project is to optimize the simulation of $k$ parallel worlds wi
 
 Simulation states are not rendered; you can output position data for the $ith$ world if passed to the program.
 
+## Contents
+- [CUDA World Simulations](#cuda-world-simulations)
+  - [Contents](#contents)
+  - [Dependencies \& Building](#dependencies--building)
+  - [Helpful Commands](#helpful-commands)
+  - [GPU Specifications](#gpu-specifications)
+  - [Notes](#notes)
+  - [Logging](#logging)
+  - [Optimizations \& New Features](#optimizations--new-features)
+  - [Plots \& Images](#plots--images)
+  - [Obstacles](#obstacles)
+  - [Conclusions](#conclusions)
+  - [Future Improvements](#future-improvements)
+
 ## Dependencies & Building
 1. CUDA `12.x` is **necessary** for this code. It is recommended to use `12.6`, which you can download on the NVIDIA Toolkit website. You can add the cuda version to your path with
     ```sh
@@ -80,11 +94,12 @@ Relevant specs for GPUs used in development - the 4090 is on a Linux server, whi
    1. Moved to `__inline__`, removed unnecessary allocations, and removed unused air resistance term.
 
 ## Plots & Images
-![Avg Times v Worlds](./figures/avg_times_vs_worlds.png)
-![Avg Times v (log2) Worlds](./figures/avg_times_vs_worldsLOG.png)
-![Conv Times v Worlds](./figures/convergence_times_vs_worlds.png)
-![Conv Times (log2) v Worlds](./figures/convergence_times_vs_worldsLOG.png)
-![Total Program Times v Worlds](./figures/totaltimes_vs_worlds.png)
+<!-- ![Total Kernel Time x World Count](./figures/totalKernelTime_x_worldCt.png) -->
+<!-- ![Global Memory (bytes) x World Count](./figures/globalMemory_x_worldCt.png) -->
+<p style="text-align: center">
+    <img src="./figures/totalKernelTime_x_worldCt.png" width=75% alt="Total Kernel Time x World Count">
+    <img src="./figures/globalMemory_x_worldCt.png" width=75% alt="Global Memory (bytes) x World Count">
+</p>
 
 ## Obstacles
 1. While official benchmarks were run on the GeForce RTX 4090, for development a local GPU(s) was used to debug and run against `ncu` to evaluate performance.
@@ -117,6 +132,6 @@ Relevant specs for GPUs used in development - the 4090 is on a Linux server, whi
 2. These `README` files are too long.
    1. Specifically allocating time a **day** after writing them to trim fat would be helpful.
 3. The plots are a black box and hectic to generate - `matplotlib` is used.
-   1. Create a general template or plot style?
+   1. ~~Create a general template or plot style?~~
 4. There needs to be a way to output the `README.md` as a pdf, as currently doing so works, but breaks `LaTeX` which I love using for math too much to remove.
 5. While world output logging exists, it is unknown how to read it somewhere.
